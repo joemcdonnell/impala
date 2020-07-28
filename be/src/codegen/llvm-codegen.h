@@ -56,13 +56,8 @@ namespace llvm {
   class NoFolder;
   class PointerType;
   class StructType;
-  class TargetData;
   class Type;
   class Value;
-  namespace legacy {
-    class FunctionPassManager;
-    class PassManager;
-  }
 
   template<typename T, typename I>
   class IRBuilder;
@@ -428,10 +423,6 @@ class LlvmCodeGen {
   /// Returns a copy of fn. The copy is added to the module.
   llvm::Function* CloneFunction(llvm::Function* fn);
 
-  /// Replace all uses of the instruction 'from' with the value 'to', and delete
-  /// 'from'. This is a wrapper around llvm::ReplaceInstWithValue().
-  void ReplaceInstWithValue(llvm::Instruction* from, llvm::Value* to);
-
   /// Returns the i-th argument of fn.
   llvm::Argument* GetArgument(llvm::Function* fn, int i);
 
@@ -455,10 +446,6 @@ class LlvmCodeGen {
   /// Only functions registered with AddFunctionToJit() and their dependencies are
   /// compiled by FinalizeModule(): other functions are considered dead code and will
   /// be removed during optimization.
-  ///
-  /// This will also wrap functions returning DecimalVals in an ABI-compliant wrapper (see
-  /// the comment in the .cc file for details). This is so we don't accidentally try to
-  /// call non-compliant code from native code.
   void AddFunctionToJit(llvm::Function* fn, CodegenFnPtrBase* fn_ptr);
 
   /// This will generate a printf call instruction to output 'message' at the builder's
@@ -503,7 +490,6 @@ class LlvmCodeGen {
   /// work for that number of bytes.  It is invalid to call that function with a
   /// different 'len'. Functions returned by these methods have already been finalized.
   llvm::Function* GetHashFunction(int num_bytes = -1);
-  llvm::Function* GetFnvHashFunction(int num_bytes = -1);
   llvm::Function* GetMurmurHashFunction(int num_bytes = -1);
 
   /// Set the NoInline attribute on 'function' and remove the AlwaysInline and InlineHint

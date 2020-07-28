@@ -37,6 +37,8 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/InstIterator.h>
+#include <llvm/IR/IntrinsicsX86.h>
+#include <llvm/IR/NoFolder.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/Linker/Linker.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -117,7 +119,7 @@ DEFINE_string_hidden(llvm_cpu_attr_whitelist, "crc,neon,fp-armv8,crypto",
     "for runtime code generation. This flag is provided to enable additional LLVM CPU "
     "attribute flags for testing.");
 #else
-DEFINE_string_hidden(llvm_cpu_attr_whitelist, "adx,aes,avx,avx2,bmi,bmi2,cmov,cx16,f16c,"
+DEFINE_string_hidden(llvm_cpu_attr_whitelist, "64bit,adx,aes,avx,avx2,bmi,bmi2,cmov,cx16,f16c,"
     "fma,fsgsbase,hle,invpcid,lzcnt,mmx,movbe,pclmul,popcnt,prfchw,rdrnd,rdseed,rtm,smap,"
     "sse,sse2,sse3,sse4.1,sse4.2,ssse3,xsave,xsaveopt",
     "(Experimental) a comma-separated list of LLVM CPU attribute flags that are enabled "
@@ -149,6 +151,7 @@ const map<int64_t, std::string> LlvmCodeGen::cpu_flag_mappings_{
 [[noreturn]] static void LlvmCodegenHandleError(
     void* user_data, const string& reason, bool gen_crash_diag) {
   LOG(FATAL) << "LLVM hit fatal error: " << reason.c_str();
+  std::abort();
 }
 
 Status LlvmCodeGen::InitializeLlvm(const char* procname, bool load_backend) {
@@ -225,7 +228,7 @@ LlvmCodeGen::LlvmCodeGen(FragmentState* state, ObjectPool* pool,
     cross_compiled_functions_(IRFunction::FN_END, nullptr) {
   DCHECK(llvm_initialized_) << "Must call LlvmCodeGen::InitializeLlvm first.";
 
-  context_->setDiagnosticHandler(&DiagnosticHandler::DiagnosticHandlerFn, this);
+  context_->setDiagnosticHandlerCallBack(&DiagnosticHandler::DiagnosticHandlerFn, this);
   load_module_timer_ = ADD_TIMER(profile_, "LoadTime");
   prepare_module_timer_ = ADD_TIMER(profile_, "PrepareTime");
   codegen_cache_lookup_timer_ = ADD_TIMER(profile_, "CodegenCacheLookupTime");
@@ -379,7 +382,7 @@ Status LlvmCodeGen::LinkModuleFromLocalFs(const string& file) {
   // are chosen by the linker or referenced by functions in the new module. Note that
   // linkModules() will materialize functions defined only in the new module.
   for (llvm::Function& fn : new_module->functions()) {
-    const string& fn_name = fn.getName();
+    const string& fn_name = fn.getName().str();
     if (shared_call_graph_.GetCallees(fn_name) != nullptr) {
       llvm::Function* local_fn = module_->getFunction(fn_name);
       RETURN_IF_ERROR(MaterializeFunction(local_fn));
@@ -616,7 +619,7 @@ llvm::PointerType* LlvmCodeGen::GetSlotPtrType(const ColumnType& type) {
 }
 
 llvm::Type* LlvmCodeGen::GetNamedType(const string& name) {
-  llvm::Type* type = module_->getTypeByName(name);
+  llvm::Type* type = llvm::StructType::getTypeByName(context(), name);
   DCHECK(type != NULL) << name;
   return type;
 }
@@ -667,7 +670,7 @@ llvm::AllocaInst* LlvmCodeGen::CreateEntryBlockAlloca(
     // Generated functions may manipulate DecimalVal arguments via SIMD instructions such
     // as 'movaps' that require 16-byte memory alignment. LLVM uses 8-byte alignment by
     // default, so explicitly set the alignment for DecimalVals.
-    alloca->setAlignment(16);
+    alloca->setAlignment(llvm::Align(16));
   }
   return alloca;
 }
@@ -684,7 +687,7 @@ llvm::AllocaInst* LlvmCodeGen::CreateEntryBlockAlloca(const LlvmBuilder& builder
   llvm::IRBuilder<> tmp(&fn->getEntryBlock(), fn->getEntryBlock().begin());
   llvm::AllocaInst* alloca =
       tmp.CreateAlloca(type, GetI32Constant(num_entries), name);
-  alloca->setAlignment(alignment);
+  alloca->setAlignment(llvm::Align(alignment));
   return alloca;
 }
 
@@ -720,7 +723,7 @@ Status LlvmCodeGen::MaterializeFunction(llvm::Function* fn) {
   // Materialized functions are marked as not materializable by LLVM.
   DCHECK(!fn->isMaterializable());
   SetCPUAttrs(fn);
-  const unordered_set<string>* callees = shared_call_graph_.GetCallees(fn->getName());
+  const unordered_set<string>* callees = shared_call_graph_.GetCallees(fn->getName().str());
   if (callees != nullptr) {
     for (const string& callee : *callees) {
       llvm::Function* callee_fn = module_->getFunction(callee);
@@ -805,7 +808,7 @@ bool LlvmCodeGen::VerifyFunction(llvm::Function* fn) {
   }
 
   if (is_corrupt_) {
-    string fn_name = fn->getName(); // llvm has some fancy operator overloading
+    string fn_name = fn->getName().str(); // llvm has some fancy operator overloading
     LOG(ERROR) << "Function corrupt: " << fn_name <<"\nFunction Dump: "
         << LlvmCodeGen::Print(fn);
     return false;
@@ -1126,7 +1129,7 @@ llvm::Function* LlvmCodeGen::FinalizeFunction(llvm::Function* function) {
   if (!VerifyFunction(function)) return NULL;
   finalized_functions_.insert(function);
   if (FLAGS_dump_ir) {
-    string fn_name = function->getName();
+    string fn_name = function->getName().str();
     LOG(INFO) << "Dump of Function "<< fn_name << ": " << LlvmCodeGen::Print(function);
   }
   return function;
@@ -1320,7 +1323,7 @@ Status LlvmCodeGen::FinalizeModule(string* module_id) {
     {
       SCOPED_TIMER(module_bitcode_gen_timer_);
       llvm::raw_string_ostream bitcode_stream(bitcode);
-      llvm::WriteBitcodeToFile(module_, bitcode_stream);
+      llvm::WriteBitcodeToFile(*module_, bitcode_stream);
       bitcode_stream.flush();
     }
     CodeGenCacheKeyConstructor::construct(bitcode, &cache_key);
@@ -1515,8 +1518,8 @@ bool LlvmCodeGen::SetFunctionPointers(CodeGenCache* cache,
       // hit an assertion during the test, could be a bug in llvm 5, need to review after
       // upgrade llvm. But because we already checked the names hashcode for key collision
       // cases, we expect all the functions should be in the cached execution engine.
-      jitted_function =
-          reinterpret_cast<void*>(execution_engine()->getFunctionAddress(function_name));
+      jitted_function = reinterpret_cast<void*>(execution_engine()->getFunctionAddress(
+          function_name.str()));
       if (jitted_function == nullptr) {
         LOG(WARNING) << "Failed to get a jitted function from cache: "
                      << function_name.data()
@@ -1556,38 +1559,6 @@ void LlvmCodeGen::AddFunctionToJit(llvm::Function* fn, CodegenFnPtrBase* fn_ptr)
   DCHECK(finalized_functions_.find(fn) != finalized_functions_.end())
       << "Attempted to add a non-finalized function to Jit: " << fn->getName().str();
   DCHECK(!is_compiled_);
-  llvm::Type* decimal_val_type = GetNamedType(CodegenAnyVal::LLVM_DECIMALVAL_NAME);
-  if (fn->getReturnType() == decimal_val_type) {
-    // Per the x86 calling convention ABI, DecimalVals should be returned via an extra
-    // first DecimalVal* argument. We generate non-compliant functions that return the
-    // DecimalVal directly, which we can call from generated code, but not from compiled
-    // native code.  To avoid accidentally calling a non-compliant function from native
-    // code, call 'function' from an ABI-compliant wrapper.
-    stringstream name;
-    name << fn->getName().str() << "ABIWrapper";
-    LlvmCodeGen::FnPrototype prototype(this, name.str(), void_type_);
-    // Add return argument
-    prototype.AddArgument(NamedVariable("result", decimal_val_type->getPointerTo()));
-    // Add regular arguments
-    for (llvm::Function::arg_iterator arg = fn->arg_begin(); arg != fn->arg_end();
-         ++arg) {
-      prototype.AddArgument(NamedVariable(arg->getName(), arg->getType()));
-    }
-    LlvmBuilder builder(context());
-    llvm::Value* args[fn->arg_size() + 1];
-    llvm::Function* fn_wrapper = prototype.GeneratePrototype(&builder, &args[0]);
-    fn_wrapper->addFnAttr(llvm::Attribute::AlwaysInline);
-    // Mark first argument as sret (not sure if this is necessary but it can't hurt)
-    fn_wrapper->addAttribute(1, llvm::Attribute::StructRet);
-    // Call 'fn' and store the result in the result argument
-    llvm::Value* result = builder.CreateCall(
-        fn, llvm::ArrayRef<llvm::Value*>({&args[1], fn->arg_size()}), "result");
-    builder.CreateStore(result, args[0]);
-    builder.CreateRetVoid();
-    fn = FinalizeFunction(fn_wrapper);
-    DCHECK(fn != NULL);
-  }
-
   AddFunctionToJitInternal(fn, fn_ptr);
 }
 
@@ -1627,7 +1598,7 @@ Status LlvmCodeGen::GetSymbols(const string& file, const string& module_id,
   scoped_ptr<LlvmCodeGen> codegen;
   RETURN_IF_ERROR(CreateFromFile(nullptr, &pool, nullptr, file, module_id, &codegen));
   for (const llvm::Function& fn : codegen->module_->functions()) {
-    if (fn.isMaterializable()) symbols->insert(fn.getName());
+    if (fn.isMaterializable()) symbols->insert(fn.getName().str());
   }
   codegen->Close();
   return Status::OK();
@@ -1734,10 +1705,10 @@ Status LlvmCodeGen::LoadIntrinsics() {
       {llvm::Intrinsic::aarch64_crc32cw, "aarch64 crc32_u32"},
       {llvm::Intrinsic::aarch64_crc32cx, "aarch64 crc32_u64"},
 #else
-      {llvm::Intrinsic::x86_sse42_crc32_32_8, "sse4.2 crc32_u8"},
-      {llvm::Intrinsic::x86_sse42_crc32_32_16, "sse4.2 crc32_u16"},
-      {llvm::Intrinsic::x86_sse42_crc32_32_32, "sse4.2 crc32_u32"},
-      {llvm::Intrinsic::x86_sse42_crc32_64_64, "sse4.2 crc32_u64"},
+      {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_8, "sse4.2 crc32_u8"},
+      {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_16, "sse4.2 crc32_u16"},
+      {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_32, "sse4.2 crc32_u32"},
+      {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_64_64, "sse4.2 crc32_u64"},
 #endif
   };
   const int num_intrinsics =
@@ -1769,7 +1740,8 @@ void LlvmCodeGen::CodegenMemcpy(
     LlvmBuilder* builder, llvm::Value* dst, llvm::Value* src, llvm::Value* size) {
   DCHECK(dst->getType()->isPointerTy()) << Print(dst);
   DCHECK(src->getType()->isPointerTy()) << Print(src);
-  builder->CreateMemCpy(dst, src, size, /* no alignment */ 0);
+  builder->CreateMemCpy(dst, /* no alignment for dst */ llvm::MaybeAlign(0),
+                        src, /* no alignment for src */ llvm::MaybeAlign(0), size);
 }
 
 void LlvmCodeGen::CodegenMemset(
@@ -1778,7 +1750,7 @@ void LlvmCodeGen::CodegenMemset(
   DCHECK_GE(size, 0);
   if (size == 0) return;
   llvm::Value* value_const = GetI8Constant(value);
-  builder->CreateMemSet(dst, value_const, size, /* no alignment */ 0);
+  builder->CreateMemSet(dst, value_const, size, /* no alignment */ llvm::MaybeAlign(0));
 }
 
 void LlvmCodeGen::CodegenClearNullBits(
@@ -1880,10 +1852,14 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
     llvm::Function* crc32_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32cw];
     llvm::Function* crc64_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32cx];
 #else
-    llvm::Function* crc8_fn = llvm_intrinsics_[llvm::Intrinsic::x86_sse42_crc32_32_8];
-    llvm::Function* crc16_fn = llvm_intrinsics_[llvm::Intrinsic::x86_sse42_crc32_32_16];
-    llvm::Function* crc32_fn = llvm_intrinsics_[llvm::Intrinsic::x86_sse42_crc32_32_32];
-    llvm::Function* crc64_fn = llvm_intrinsics_[llvm::Intrinsic::x86_sse42_crc32_64_64];
+    llvm::Function* crc8_fn =
+        llvm_intrinsics_[llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_8];
+    llvm::Function* crc16_fn =
+        llvm_intrinsics_[llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_16];
+    llvm::Function* crc32_fn =
+        llvm_intrinsics_[llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_32];
+    llvm::Function* crc64_fn =
+        llvm_intrinsics_[llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_64_64];
 #endif
 
     // Generate the crc instructions starting with the highest number of bytes
@@ -1978,11 +1954,6 @@ static llvm::Function* GetLenOptimizedHashFn(
 
 llvm::Function* LlvmCodeGen::GetMurmurHashFunction(int len) {
   return GetLenOptimizedHashFn(this, IRFunction::HASH_MURMUR, len);
-}
-
-void LlvmCodeGen::ReplaceInstWithValue(llvm::Instruction* from, llvm::Value* to) {
-  llvm::BasicBlock::iterator iter(from);
-  llvm::ReplaceInstWithValue(from->getParent()->getInstList(), iter, to);
 }
 
 llvm::Argument* LlvmCodeGen::GetArgument(llvm::Function* fn, int i) {
@@ -2103,11 +2074,13 @@ namespace boost {
 /// throwing the exception.
 [[noreturn]] void throw_exception(std::exception const& e) {
   LOG(FATAL) << "Cannot handle exceptions in codegen'd code " << e.what();
+  std::abort();
 }
 
 [[noreturn]] void throw_exception(
     std::exception const& e, boost::source_location const& loc) {
   LOG(FATAL) << loc.file_name() << ":" << loc.line() << "] " << loc.function_name()
              << ": Cannot handle exceptions in codegen'd code " << e.what();
+  std::abort();
 }
 }

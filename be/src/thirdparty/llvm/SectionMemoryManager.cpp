@@ -26,7 +26,7 @@ namespace impala {
 bool SectionMemoryManager::hasSpace(const MemoryGroup &MemGroup,
                                     uintptr_t Size) const {
   for (const FreeMemBlock &FreeMB : MemGroup.FreeMem) {
-    if (FreeMB.Free.size() >= Size)
+    if (FreeMB.Free.allocatedSize() >= Size)
       return true;
   }
   return false;
@@ -52,7 +52,7 @@ void SectionMemoryManager::reserveAllocationSpace(
     uintptr_t RWDataSize, uint32_t RWDataAlign) {
   if (CodeSize == 0 && RODataSize == 0 && RWDataSize == 0) return;
 
-  static const unsigned PageSize = sys::Process::getPageSize();
+  static const unsigned PageSize = sys::Process::getPageSizeEstimate();
 
   CodeAlign = checkAlignment(CodeAlign, PageSize);
   RODataAlign = checkAlignment(RODataAlign, PageSize);
@@ -94,7 +94,7 @@ void SectionMemoryManager::reserveAllocationSpace(
     return;
   }
   // Request is page-aligned, so we should always get back exactly the request.
-  DCHECK_EQ(MB.size(), RequiredSize);
+  DCHECK_EQ(MB.allocatedSize(), RequiredSize);
   // CodeMem will arbitrarily own this MemoryBlock to handle cleanup.
   CodeMem.AllocatedMem.push_back(MB);
   uintptr_t Addr = (uintptr_t)MB.base();
@@ -154,9 +154,9 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
   // Look in the list of free memory regions and use a block there if one
   // is available.
   for (FreeMemBlock &FreeMB : MemGroup.FreeMem) {
-    if (FreeMB.Free.size() >= RequiredSize) {
+    if (FreeMB.Free.allocatedSize() >= RequiredSize) {
       Addr = (uintptr_t)FreeMB.Free.base();
-      uintptr_t EndOfBlock = Addr + FreeMB.Free.size();
+      uintptr_t EndOfBlock = Addr + FreeMB.Free.allocatedSize();
       // Align the address.
       Addr = (Addr + Alignment - 1) & ~(uintptr_t)(Alignment - 1);
 
@@ -204,7 +204,7 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
   // Remember that we allocated this memory
   MemGroup.AllocatedMem.push_back(MB);
   Addr = (uintptr_t)MB.base();
-  uintptr_t EndOfBlock = Addr + MB.size();
+  uintptr_t EndOfBlock = Addr + MB.allocatedSize();
 
   // Align the address.
   Addr = (Addr + Alignment - 1) & ~(uintptr_t)(Alignment - 1);
@@ -261,20 +261,20 @@ bool SectionMemoryManager::finalizeMemory(std::string *ErrMsg)
 }
 
 static sys::MemoryBlock trimBlockToPageSize(sys::MemoryBlock M) {
-  static const size_t PageSize = sys::Process::getPageSize();
+  static const size_t PageSize = sys::Process::getPageSizeEstimate();
 
   size_t StartOverlap =
       (PageSize - ((uintptr_t)M.base() % PageSize)) % PageSize;
 
-  size_t TrimmedSize = M.size();
+  size_t TrimmedSize = M.allocatedSize();
   TrimmedSize -= StartOverlap;
   TrimmedSize -= TrimmedSize % PageSize;
 
   sys::MemoryBlock Trimmed((void *)((uintptr_t)M.base() + StartOverlap), TrimmedSize);
 
   assert(((uintptr_t)Trimmed.base() % PageSize) == 0);
-  assert((Trimmed.size() % PageSize) == 0);
-  assert(M.base() <= Trimmed.base() && Trimmed.size() <= M.size());
+  assert((Trimmed.allocatedSize() % PageSize) == 0);
+  assert(M.base() <= Trimmed.base() && Trimmed.allocatedSize() <= M.allocatedSize());
 
   return Trimmed;
 }
@@ -300,7 +300,7 @@ SectionMemoryManager::applyMemoryGroupPermissions(MemoryGroup &MemGroup,
   // Remove all blocks which are now empty
   MemGroup.FreeMem.erase(
       remove_if(MemGroup.FreeMem,
-                [](FreeMemBlock &FreeMB) { return FreeMB.Free.size() == 0; }),
+                [](FreeMemBlock &FreeMB) { return FreeMB.Free.allocatedSize() == 0; }),
       MemGroup.FreeMem.end());
 
   return std::error_code();
@@ -308,7 +308,7 @@ SectionMemoryManager::applyMemoryGroupPermissions(MemoryGroup &MemGroup,
 
 void SectionMemoryManager::invalidateInstructionCache() {
   for (sys::MemoryBlock &Block : CodeMem.PendingMem)
-    sys::Memory::InvalidateInstructionCache(Block.base(), Block.size());
+    sys::Memory::InvalidateInstructionCache(Block.base(), Block.allocatedSize());
 }
 
 SectionMemoryManager::~SectionMemoryManager() {

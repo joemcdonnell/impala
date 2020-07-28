@@ -19,6 +19,7 @@
 
 #include <mutex>
 
+#include "common/legacy-atomic.h"
 #include "gen-cpp/ExternalDataSource_types.h"
 #include "runtime/raw-value.h"
 #include "runtime/runtime-filter-bank.h"
@@ -173,13 +174,13 @@ class RuntimeFilter {
   /// it does not filter any rows, either because it was not created
   /// (filter_desc_.bloom_filter is false), there was not enough memory, or the false
   /// positive rate was determined to be too high.
-  AtomicPtr<BloomFilter> bloom_filter_;
+  LegacyAtomicPtr<BloomFilter> bloom_filter_;
 
   /// May be NULL even after arrival_time_ is set if filter_desc_.min_max_filter is false.
-  AtomicPtr<MinMaxFilter> min_max_filter_;
+  LegacyAtomicPtr<MinMaxFilter> min_max_filter_;
 
   /// May be NULL even after arrival_time_ is set if filter_desc_.in_list_filter is false.
-  AtomicPtr<InListFilter> in_list_filter_;
+  LegacyAtomicPtr<InListFilter> in_list_filter_;
 
   /// Reference to the filter's thrift descriptor in the thrift Plan tree.
   const TRuntimeFilterDesc& filter_desc_;
