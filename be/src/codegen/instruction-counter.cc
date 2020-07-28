@@ -80,6 +80,9 @@ void InstructionCounter::visit(const llvm::Instruction& I) {
     case llvm::Instruction::Invoke:
     case llvm::Instruction::Resume:
     case llvm::Instruction::Unreachable:
+    case llvm::Instruction::CleanupRet:
+    case llvm::Instruction::CatchRet:
+    case llvm::Instruction::CallBr:
       IncrementCount(TERMINATOR_INSTS);
       break;
     case llvm::Instruction::Add:
@@ -105,6 +108,7 @@ void InstructionCounter::visit(const llvm::Instruction& I) {
     case llvm::Instruction::Alloca:
     case llvm::Instruction::Load:
     case llvm::Instruction::Store:
+    case llvm::Instruction::GetElementPtr:
     case llvm::Instruction::Fence:
     case llvm::Instruction::AtomicCmpXchg:
     case llvm::Instruction::AtomicRMW:
@@ -122,6 +126,7 @@ void InstructionCounter::visit(const llvm::Instruction& I) {
     case llvm::Instruction::PtrToInt:
     case llvm::Instruction::IntToPtr:
     case llvm::Instruction::BitCast:
+    case llvm::Instruction::AddrSpaceCast:
       IncrementCount(CAST_INSTS);
       break;
     case llvm::Instruction::ICmp:
@@ -138,7 +143,10 @@ void InstructionCounter::visit(const llvm::Instruction& I) {
     case llvm::Instruction::ExtractValue:
     case llvm::Instruction::InsertValue:
     case llvm::Instruction::LandingPad:
-    case llvm::Instruction::GetElementPtr:
+    case llvm::Instruction::Freeze:
+    case llvm::Instruction::FNeg:
+    case llvm::Instruction::CleanupPad:
+    case llvm::Instruction::CatchPad:
       IncrementCount(OTHER_INSTS);
       break;
     default:
