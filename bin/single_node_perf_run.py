@@ -80,15 +80,182 @@ from tempfile import mkdtemp
 import json
 import os
 import pipes
+import platform
 import shutil
 import subprocess
 import sys
 import textwrap
 
+from pathlib import Path
 from tests.common.test_dimensions import TableFormatInfo
 
 IMPALA_HOME = os.environ["IMPALA_HOME"]
 IMPALA_PERF_RESULTS = os.path.join(IMPALA_HOME, "perf_results")
+
+
+# We are running in a base cgroup (V2 only) with the following requirements:
+# 1. It has cpusets enabled (i.e. cgroup.controllers contains cpuset)
+# 2. It has cpuset.cpus and cpuset.mems set
+# 3. We have permissions to manipulate it and create subgroups.
+# For Cgroups V2, the usual way to do this is to run this inside a systemd service
+# with Delegate, AllowedCPUs, and AllowedMemoryNodes set.
+#
+# We do not have permissions outside of our base cgroup, so this should never
+# access anything outside it. When running via systemd, there won't be subgroups
+# that need to be cleaned up, but this supports cleaning them up anyway.
+class CgroupHandler:
+  def __init__(self, base_cgroup):
+    # For this to work properly, the base_cgroup needs to be a relative path. Check that
+    # it does not start with /
+    if base_cgroup[0] == "/":
+      raise Exception("Base cgroup must be a relative path: {0}".format(base_cgroup))
+    self.base_cgroup = Path("/sys/fs/cgroup") / base_cgroup
+    # Check preconditions for using this cgroup
+    self.validate_base_cgroup()
+    # When running via systemd, there won't be leftover subgroups, but this cleans them
+    # up anyway.
+    self.cleanup_subgroups()
+
+  def validate_base_cgroup(self):
+    # 0. Check for existence of the cgroup's directory
+    if not self.base_cgroup.exists():
+      raise Exception("No such cgroup: {0}".format(self.base_cgroup))
+    if not self.base_cgroup.is_dir():
+      raise Exception("Cgroup path is not a directory: {0}".format(self.base_cgroup))
+
+    # 1. The cgroup must support cpusets
+    with open(self.base_cgroup / "cgroup.controllers") as f:
+      contents = f.read()
+      if "cpuset" not in contents:
+        raise Exception("cpuset support not present in cgroup.controllers. "
+                        "Contents: {0}".format(contents))
+
+    # 2. cpuset.cpus and cpuset.mems must be set (this means that the systemd service
+    # needs to specify AllowedCPUs and AllowedMemoryNodes)
+    with open(self.base_cgroup / "cpuset.cpus") as f:
+      contents = f.read().strip()
+      if len(contents) == 0:
+        raise Exception("cpuset.cpus must be set on the base cgroup")
+      self.base_cpus = contents
+
+    with open(self.base_cgroup / "cpuset.mems") as f:
+      contents = f.read().strip()
+      if len(contents) == 0:
+        raise Exception("cpuset.mems must be set on the base cgroup")
+      self.base_mems = contents
+
+  def cleanup_subgroups(self):
+    self.cleanup_subgroups_helper(Path(self.base_cgroup), False)
+
+  @staticmethod
+  def cleanup_subgroups_helper(cgroup_path, delete_this_path):
+    # This is a recursive function to clean up any subgroups (which can be nested).
+    # This takes in a pathlib Path.
+    subdirs = [x for x in cgroup_path.iterdir() if x.is_dir()]
+    for subdir in subdirs:
+      # When recursing, we want to actually remove the dir
+      CgroupHandler.cleanup_subgroups_helper(subdir, True)
+    # All subgroups are gone. We can remove this dir if desired.
+    if delete_this_path:
+      cgroup_path.rmdir()
+
+  def enable_cpusets(self):
+    # Adding a feature is done by writing +feature to cgroup.subtree_control. This needs
+    # to happen after we've created subgroups and moved the main process out of the base
+    # cgroup.
+    with open(self.base_cgroup / "cgroup.subtree_control", "w") as f:
+      f.write("+cpuset\n")
+
+  def get_base_cgroup_cpus(self):
+    return CgroupHandler.comma_dash_string_to_integer_list(self.base_cpus)
+
+  @staticmethod
+  def comma_dash_string_to_integer_list(string):
+    # The comma dash string is like "0-3,7-8" and we want to convert that to a list of
+    # integers (e.g. [0,1,2,3,7,8]). We assume that the ranges are not overlapping.
+    int_list = []
+    for s in string.split(","):
+      if "-" in s:
+        start, end = s.split("-")
+        if end <= start:
+          raise Exception("Invalid range {0}".format(s))
+        int_list.extend(range(int(start), int(end) + 1))
+      else:
+        if s != "":
+          int_list.append(int(s))
+    return int_list
+
+  @staticmethod
+  def integer_list_to_comma_dash_string(int_list):
+    # Given an integer list, convert it to a comma dash string. This is the reverse of
+    # comma_dash_string_to_integer_list, so [0,1,2,3,7,8] => "0-3,7-8"
+    if len(int_list) == 0:
+      return ""
+    sorted_int_list = sorted(int_list)
+    string_pieces = []
+    start_range = 0
+    for i in range(1, len(sorted_int_list)):
+      # If the integers are contiguous, continue with this start_range
+      if sorted_int_list[i - 1] + 1 == sorted_int_list[i]:
+        continue
+      else:
+        # We are at the end of a contiguous range
+        # If there is only one element, emit it alone, otherwise emit the x-y pair
+        if start_range == i - 1:
+          string_pieces.append(str(sorted_int_list[start_range]))
+        else:
+          string_pieces.append("{0}-{1}".format(sorted_int_list[start_range],
+              sorted_int_list[i - 1]))
+        # Starting a new contiguous range
+        start_range = i
+
+    # We are at the end of the list, so that's the end of a contiguous range
+    # Emit what is left.
+    if start_range == len(sorted_int_list) - 1:
+      string_pieces.append(str(sorted_int_list[start_range]))
+    else:
+      string_pieces.append("{0}-{1}".format(sorted_int_list[start_range],
+          sorted_int_list[-1]))
+
+    return ",".join(string_pieces)
+
+  def create_subgroup(self, subgroup_name):
+    # Simply create subdirectory
+    subgroup_path = self.base_cgroup / subgroup_name
+    subgroup_path.mkdir()
+
+  def set_cpu_list(self, subgroup_name, cpu_id_list):
+    subgroup_path = self.base_cgroup / subgroup_name
+    if not subgroup_path.exists():
+      raise Exception("No such cgroup: {0}".format(subgroup_path))
+    # Validate that the cpu_list is a subset of the CPUs assigned to the base
+    # cgroup
+    subgroup_cpu_id_set = set(cpu_id_list)
+    base_cpu_id_set = set(self.get_base_cgroup_cpus())
+    invalid_cpus = subgroup_cpu_id_set.difference(base_cpu_id_set)
+    if len(invalid_cpus) != 0:
+      raise Exception("Requested CPUs not in the base cgroup: {0}".format(invalid_cpus))
+
+    cpu_id_string = CgroupHandler.integer_list_to_comma_dash_string(cpu_id_list)
+
+    # Write to the cpuset.cpus file
+    with open(subgroup_path / "cpuset.cpus", "w") as f:
+      f.write(cpu_id_string)
+    # Write to the cpuset.mems file (just use the base cgroup's setting)
+    with open(subgroup_path / "cpuset.mems", "w") as f:
+      f.write(self.base_mems)
+
+  def put_pid_in_cgroup(self, pid, subgroup_name):
+    # Verify the cgroup exists
+    subgroup_path = self.base_cgroup / subgroup_name
+    if not subgroup_path.exists():
+      raise Exception("No such cgroup: {0}".format(subgroup_path))
+    if not subgroup_path.is_dir():
+      raise Exception("Cgroup path is not a directory: {0}".format(subgroup_path))
+
+    # Write our pid to the tasks file
+    with open(subgroup_path / "cgroup.procs", "w") as f:
+      f.write(str(pid))
 
 
 def configured_call(cmd):
@@ -141,15 +308,43 @@ def build(git_hash, options):
   configured_call(buildall)
 
 
-def start_minicluster():
+def start_minicluster(cgroup_handler):
+  # We want the minicluster to run in the "other" group. Switch into the "other" group
+  # to start the minicluster, then switch back to the "admin" group.
+  put_pid_in_cgroup(cgroup_handler, os.getpid(), "other")
   configured_call(["{0}/bin/create-test-configuration.sh".format(IMPALA_HOME)])
   configured_call(["{0}/testdata/bin/run-all.sh".format(IMPALA_HOME)])
+  put_pid_in_cgroup(cgroup_handler, os.getpid(), "admin")
 
 
-def start_impala(num_impalads, options):
+def stop_minicluster():
+  configured_call(["{0}/testdata/bin/kill-all.sh".format(IMPALA_HOME)])
+
+
+def start_impala(num_impalads, options, cgroup_handler):
+  # We want the non-impalad daemons like statestored/catalogd in the "other" group,
+  # so switch in before starting, then switch back to "admin".
+  put_pid_in_cgroup(cgroup_handler, os.getpid(), "other")
   configured_call(["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME), "-s",
                    str(num_impalads), "-c", str(num_impalads)]
                   + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
+  put_pid_in_cgroup(cgroup_handler, os.getpid(), "admin")
+  if cgroup_handler:
+    # Get the Impalad pids
+    output = subprocess.check_output(["pgrep", "impalad"], text=True)
+    impalad_pids = sorted([int(x) for x in output.strip().split("\n")])
+    num_found_impalads = len(impalad_pids)
+    if num_found_impalads != num_impalads:
+      raise Exception("Expected {0} impalads but found {1}".format(
+          num_impalads, num_found_impalads))
+    # The impalad_pids are sorted, and we are putting each pid in its own cgroup.
+    # The first cgroup goes to impalad1, the second to impalad2, and so on.
+    for impalad_idx, pid in enumerate(impalad_pids):
+      put_pid_in_cgroup(cgroup_handler, pid, "impalad{0}".format(impalad_idx + 1))
+
+
+def stop_impala():
+  configured_call(["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME), "--kill"])
 
 
 def run_workload(base_dir, workloads, options):
@@ -284,9 +479,160 @@ def restore_workloads(source):
                   os.path.join(IMPALA_HOME, "testdata", "workloads"), dirs_exist_ok=True)
 
 
+# Read /proc/cpuinfo and produce a map from the core id to the cpu ids.
+# This is important for hyperthreaded systems, as it gives us information about
+# which cpu ids are hyperthreads on the same core.
+def get_core_to_cpu_id_map(allowed_cpu_ids):
+  assert platform.processor() in ["x86_64", "aarch64"]
+  core_to_cpu_id_map = {}
+
+  def add_core_to_cpu_id_entry(core_id, cpu_id):
+    if cpu_id not in allowed_cpu_ids:
+      return
+    if core_id not in core_to_cpu_id_map:
+      core_to_cpu_id_map[core_id] = [cpu_id]
+    else:
+      core_to_cpu_id_map[core_id].append(cpu_id)
+
+  with open("/proc/cpuinfo") as f:
+    cur_cpu_id = -1
+    for line in f:
+      # The behavior of /proc/cpuinfo is platform specific, so this has separate logic
+      # for x86_64 and ARM.
+      if platform.processor() == "x86_64":
+        # On x86_64, /proc/cpuinfo starts each section with "processor", and the
+        # "core id" will come later in that same section. So, we can associate each
+        # processor to the core id that follows, and this provides hyperthreading
+        # information.
+        if line.startswith("processor"):
+          cur_cpu_id = int(line.split(":")[1].strip())
+        elif line.startswith("core id"):
+          assert platform.processor() == "x86_64"
+          core_id = int(line.split(":")[1].strip())
+          add_core_to_cpu_id_entry(core_id, cur_cpu_id)
+      else:
+        # ARM is not hyperthreaded and there is no "core id" field, so treat each cpu id
+        # as the core id
+        assert platform.processor() == "aarch64"
+        if line.startswith("processor"):
+          cur_cpu_id = int(line.split(":")[1].strip())
+          add_core_to_cpu_id_entry(cur_cpu_id, cur_cpu_id)
+
+  return core_to_cpu_id_map
+
+
+def create_cgroups(options, cgroup_handler):
+  # This sets up num_impalads+2 cgroups. There is a single "admin" group with access
+  # to all the CPUs. Then, there is one per impalad and a catch-all
+  # "other" group for everything else (like the minicluster, etc).
+  #
+  # Things need to go in this order:
+  # 1. Create subgroup(s) and move the main process into a subgroup to avoid
+  #    triggering Cgroup V2's no-interior-processes rule
+  # 2. Turn on cpusets for the subgroups
+  # 3. Set the cpus for each of the subgroups
+  num_impalads = options.num_impalads
+
+  # 1. Create "admin" subgroup and move into it, then create subgroups for Impalads
+  cgroup_handler.create_subgroup("admin")
+  cgroup_handler.put_pid_in_cgroup(os.getpid(), "admin")
+  cgroup_handler.create_subgroup("other")
+  for impalad_idx in range(num_impalads):
+    cgroup_handler.create_subgroup("impalad{0}".format(impalad_idx + 1))
+
+  # 2. Enable cpusets
+  cgroup_handler.enable_cpusets()
+
+  # 3. Set the CPUs for each cgroup. The "admin" cgroup can use all CPUs. Each impalad
+  # gets cpus_per_impalad CPUs assigned, starting from the 0th CPU. The "other" cgroup
+  # is for everything else, and it gets any remaining CPUs.
+  cpus_per_impalad = options.cpus_per_impalad
+  cpu_list = cgroup_handler.get_base_cgroup_cpus()
+
+  # Set "admin" to use all CPUs
+  print("Using all CPUs for admin: {0}".format(cpu_list))
+  cgroup_handler.set_cpu_list("admin", cpu_list)
+
+  core_to_cpu_id_map = get_core_to_cpu_id_map(cpu_list)
+  core_list = list(core_to_cpu_id_map.keys())
+  if len(core_list) == len(cpu_list):
+    # No hyperthreading
+    cores_per_impalad = cpus_per_impalad
+  else:
+    # This should be hyperthreaded. Let's verify that every core has two threads
+    for core_id, cpu_id_list in core_to_cpu_id_map.items():
+      if len(cpu_id_list) != 2:
+        raise Exception("Core id {0} has {1} threads, expected 2. Full info: {2}".format(
+            core_id, len(cpu_id_list), core_to_cpu_id_map))
+    if cpus_per_impalad % 2 != 0:
+      raise Exception("cpus_per_impalad is not even and this is a hyperthreaded machine.")
+    cores_per_impalad = int(cpus_per_impalad / 2)
+
+  # There needs to be at least one extra CPU once we give each Impalad the specified
+  # number of CPUs
+  requested_cpus = num_impalads * cpus_per_impalad + 1
+  if len(cpu_list) < requested_cpus:
+    raise Exception("Provided cpuset cgroup cannot satisfy request for {0} cores".format(
+        requested_cpus))
+
+  # Create one cgroup per impalad and assign cpus_per_impalad to it.
+  # We simply slice up the cpu_list.
+  for impalad_idx in range(num_impalads):
+    start_core_idx = impalad_idx * cores_per_impalad
+    end_core_idx = (impalad_idx + 1) * cores_per_impalad
+    core_slice = core_list[start_core_idx:end_core_idx]
+    cpu_slice = []
+    for core_id in core_slice:
+      if cores_per_impalad != cpus_per_impalad and options.disable_hyperthreading:
+        # Only use the first thread of each core
+        cpu_slice.append(core_to_cpu_id_map[core_id][0])
+      else:
+        cpu_slice.extend(core_to_cpu_id_map[core_id])
+    if options.disable_hyperthreading:
+      assert len(cpu_slice) == cores_per_impalad
+    else:
+      assert len(cpu_slice) == cpus_per_impalad
+    print("Handing out cpus {0} to Impala {1}".format(cpu_slice, impalad_idx + 1))
+    cgroup_handler.set_cpu_list("impalad{0}".format(impalad_idx + 1), cpu_slice)
+
+  # Now, we create a other cgroup for all the non-impalad processes
+  # This gets all remaining CPUs not used by the impalads
+  remaining_cores = core_list[num_impalads * cores_per_impalad:]
+  remaining_cpus = []
+  for core_id in remaining_cores:
+    remaining_cpus.extend(core_to_cpu_id_map[core_id])
+  print("Remaining cpus for other: {0}".format(remaining_cpus))
+  cgroup_handler.set_cpu_list("other", remaining_cpus)
+
+
+def put_pid_in_cgroup(cgroup_handler, pid, cgroup):
+  if not cgroup_handler:
+    return
+  cgroup_handler.put_pid_in_cgroup(pid, cgroup)
+
+
 def perf_ab_test(options, args):
   """Does the main work: build, run tests, compare."""
   hash_a = get_git_hash_for_name(args[0])
+
+  cgroup_handler = None
+  # Cgroups support relies on the caller invoking this script inside a top level
+  # cgroup with appropriate permissions to create subgroups with cpusets. This is
+  # often done by running this script in a systemd service with Delegate=true.
+  if options.use_cgroup_cpusets:
+    # This process's current cgroup is the base cgroup, read it from /proc/self/cgroup
+    with open("/proc/self/cgroup") as f:
+      contents = f.read()
+      # Entry is like 0::/user.slice/user-1000.slice/session-2.scope
+      # Exract out the last entry (i.e. "/user.slice/user-1000.slice/session-2.scope")
+      base_cgroup = contents.split(":")[2].strip()
+      # Remove the leading / so it doesn't get treated like an absolute path
+      # (i.e. "user.slice/user-1000.slice/session-2.scope")
+      base_cgroup = base_cgroup[1:]
+    cgroup_handler = CgroupHandler(base_cgroup)
+    # Creating the cgroups also moves this process into the "other" subgroup for the
+    # duration.
+    create_cgroups(options, cgroup_handler)
 
   # Create the base directory to store the results in
   results_path = IMPALA_PERF_RESULTS
@@ -304,8 +650,8 @@ def perf_ab_test(options, args):
   restore_workloads(workload_dir)
 
   if options.start_minicluster:
-    start_minicluster()
-  start_impala(options.num_impalads, options)
+    start_minicluster(cgroup_handler)
+  start_impala(options.num_impalads, options, cgroup_handler)
 
   workloads = options.workloads.split(",")
 
@@ -327,6 +673,10 @@ def perf_ab_test(options, args):
   workloads = ",".join(["{0}:{1}".format(workload, options.scale)
                         for workload in workloads])
 
+  # Restart impala after loading data
+  stop_impala()
+  start_impala(options.num_impalads, options, cgroup_handler)
+
   run_workload(temp_dir, workloads, options)
 
   if len(args) > 1 and args[1]:
@@ -336,9 +686,19 @@ def perf_ab_test(options, args):
     run_git(["checkout", "--", "testdata/workloads"])
     build(hash_b, options)
     restore_workloads(workload_dir)
-    start_impala(options.num_impalads, options)
+    start_impala(options.num_impalads, options, cgroup_handler)
     run_workload(temp_dir, workloads, options)
     compare(temp_dir, hash_a, hash_b, options)
+
+  stop_impala()
+  # If we started the minicluster, shut it off at the end
+  if options.start_minicluster:
+    stop_minicluster()
+  # At this point, we have stopped all processes except the runner script.
+  # We could move ourself to the parent cgroup and cleanup the subgroups.
+  # When running via systemd, this is not needed as systemd will clean up
+  # the whole tree when this exits. Let's avoid the complication and skip
+  # cleanup for now.
 
 
 def parse_options():
@@ -351,7 +711,8 @@ def parse_options():
   parser.add_option("--iterations", default=30, help="number of times to run each query")
   parser.add_option("--table_formats", default="parquet/none", help="comma-separated "
                     "list of table formats. Default: parquet/none")
-  parser.add_option("--num_impalads", default=1, help="number of impalads. Default: 1")
+  parser.add_option("--num_impalads", default=1, type="int",
+                    help="number of impalads. Default: 1")
   # Less commonly-used options:
   parser.add_option("--query_names",
                     help="comma-separated list of regular expressions. A query is "
@@ -374,6 +735,16 @@ def parse_options():
   parser.add_option("--exec_options", dest="exec_options",
                     help=("Query exec option string to run workload (formatted as "
                       "'opt1:val1;opt2:val2')"))
+  parser.add_option("--use_cgroup_cpusets", action="store_true",
+                    dest="use_cgroup_cpusets", help=("Use cgroup cpusets to put the "
+                      "impalads and minicluster on separate cores. This requires "
+                      "invoking this script via a systemd service."))
+  parser.add_option("--cpus_per_impalad", dest="cpus_per_impalad", type="int", default=1,
+                    help="The number of cpu cores per Impalad when using cgroup cpusets")
+  parser.add_option("--disable_hyperthreading", action="store_true",
+                    dest="disable_hyperthreading", help=("Map Impalads to only one of "
+                      "the two hyperthreads when using cgroup cpusets. This does not do "
+                      "anything on non-hyperthreaded systems."))
 
   parser.set_usage(textwrap.dedent("""
     single_node_perf_run.py [options] git_hash_A [git_hash_B]
