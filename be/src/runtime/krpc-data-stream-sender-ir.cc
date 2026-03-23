@@ -58,8 +58,13 @@ Status KrpcDataStreamSender::PartitionRowCollector::AppendRow(
   num_rows_++;
   RETURN_IF_ERROR(collector_batch_->AppendRow(row, row_desc));
   DCHECK_GT(row_batch_capacity_, 0);
-  if (UNLIKELY(
-      num_rows_ == row_batch_capacity_ || collector_batch_->ReachedSizeLimit())) {
+  // Keep adding rows unless:
+  // We have exceeded the row batch capacity AND we reached the row batch minimum size
+  // OR
+  // We reached the row batch size limit (regardless of num rows)
+  if (UNLIKELY((num_rows_ >= row_batch_capacity_ &&
+                collector_batch_->ReachedSizeLimit(row_batch_minimum_size_)) ||
+               collector_batch_->ReachedSizeLimit())) {
     // This swaps collector_batch_ with an empty batch.
     RETURN_IF_ERROR(SendCurrentBatch());
   }

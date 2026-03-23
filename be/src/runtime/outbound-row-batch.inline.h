@@ -89,8 +89,8 @@ bool OutboundRowBatch::TryAppendTuple(const Tuple* tuple, const TupleDescriptor*
   return tuple->TryDeepCopy(&dst, dst_end, &tuple_data_offset_, *desc);
 }
 
-bool OutboundRowBatch::ReachedSizeLimit() {
-    return RowBatch::AT_CAPACITY_MEM_USAGE <= tuple_data_offset_;
+bool OutboundRowBatch::ReachedSizeLimit(int limit) {
+  return limit <= tuple_data_offset_;
 }
 
 }

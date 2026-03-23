@@ -24,6 +24,7 @@
 #include "gen-cpp/row_batch.pb.h"
 #include "kudu/util/slice.h"
 #include "runtime/mem-tracker.h"
+#include "runtime/row-batch.h"
 #include "util/fixed-size-hash-table.h"
 
 namespace llvm {
@@ -114,7 +115,7 @@ class OutboundRowBatch {
 
   // Returns true if the size limit (also used by RowBatch) is reached.
   // Only used if the batch is serialized with AppendRow().
-  inline bool ReachedSizeLimit();
+  inline bool ReachedSizeLimit(int limit = RowBatch::AT_CAPACITY_MEM_USAGE);
 
   int64_t GetDeserializedSize() const {
     return header_.uncompressed_size() + tuple_offsets_.size() * sizeof(Tuple*);
