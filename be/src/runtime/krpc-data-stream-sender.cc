@@ -171,6 +171,7 @@ class KrpcDataStreamSender::Channel : public CacheLineAligned {
       dest_node_id_(dest_node_id),
       is_local_(is_local) {
     row_batch_capacity_ = CalculateRowBatchCapacity();
+    row_batch_minimum_size_ = CalculateRowBatchMinimumSize();
     DCHECK(IsResolvedAddress(address_));
   }
 
@@ -211,7 +212,9 @@ class KrpcDataStreamSender::Channel : public CacheLineAligned {
   Status WaitForRpc();
 
   int RowBatchCapacity() const { return row_batch_capacity_; }
+  int RowBatchMinimumSize() const { return row_batch_minimum_size_; }
   int CalculateRowBatchCapacity() const;
+  int CalculateRowBatchMinimumSize() const;
 
   // The type for a RPC worker function.
   typedef std::function<Status()> DoRpcFn;
@@ -238,6 +241,7 @@ class KrpcDataStreamSender::Channel : public CacheLineAligned {
   const bool is_local_;
 
   int row_batch_capacity_ = -1;
+  int row_batch_minimum_size_ = -1;
 
   // Owns an outbound row batch that can be referenced by the in-flight RPC. Contains
   // a RowBatchHeaderPB and the buffers for the serialized tuple offsets and data.
@@ -393,6 +397,11 @@ int KrpcDataStreamSender::Channel::CalculateRowBatchCapacity() const {
   // TODO: take into account of var-len data at runtime.
   return
       max(1, parent_->per_channel_buffer_size_ / max(row_desc_->GetRowSize(), 1));
+}
+
+int KrpcDataStreamSender::Channel::CalculateRowBatchMinimumSize() const {
+  // Has space for at least one more row based on the expected row size
+  return max(1, parent_->per_channel_buffer_size_ - max(row_desc_->GetRowSize(), 1));
 }
 
 void KrpcDataStreamSender::Channel::MarkDone(const Status& status) {
@@ -897,6 +906,7 @@ Status KrpcDataStreamSender::Prepare(
   for (PartitionRowCollector& collector: partition_row_collectors_) {
     collector.collector_batch_.reset(new OutboundRowBatch(*char_mem_tracker_allocator_));
     collector.row_batch_capacity_ = collector.channel_->RowBatchCapacity();
+    collector.row_batch_minimum_size_ = collector.channel_->RowBatchMinimumSize();
   }
   for (auto& [ch, ice_ch] : channel_to_ice_channel_) {
     ice_ch->Prepare(mem_tracker_.get());

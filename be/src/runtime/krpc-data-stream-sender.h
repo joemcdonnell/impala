@@ -177,6 +177,7 @@ class KrpcDataStreamSender : public DataSink {
     Channel* channel_ = nullptr;
     int num_rows_ = 0;
     int row_batch_capacity_ = 0;
+    int row_batch_minimum_size_ = 0;
 
     // Copies a single row into collector_batch_ and flushes it (SendCurrentBatch())
     // once row count or memory capacity is reached. This call may block if capacity is
