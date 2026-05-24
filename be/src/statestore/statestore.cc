@@ -1094,7 +1094,7 @@ Status Statestore::SendTopicUpdate(Subscriber* subscriber, UpdateKind update_kin
 
   TUpdateStateResponse response;
   RETURN_IF_ERROR(client.DoRpc(
-      &StatestoreSubscriberClientWrapper::UpdateState, update_state_request, &response));
+      &StatestoreSubscriberClientWrapper::UpdateStateWithRetry, update_state_request, &response));
 
   StatsMetric<double>* update_duration_metric =
       update_kind == UpdateKind::PRIORITY_TOPIC_UPDATE ?
@@ -1296,7 +1296,7 @@ Status Statestore::SendHeartbeat(Subscriber* subscriber) {
     request.__set_request_statestore_conn_state(true);
   }
   RETURN_IF_ERROR(
-      client.DoRpc(&StatestoreSubscriberClientWrapper::Heartbeat, request, &response));
+      client.DoRpc(&StatestoreSubscriberClientWrapper::HeartbeatWithRetry, request, &response));
 
   heartbeat_duration_metric_->Update(sw.ElapsedTime() / (1000.0 * 1000.0 * 1000.0));
   if (FLAGS_enable_statestored_ha && !IsActive()
@@ -1593,7 +1593,7 @@ void Statestore::SendUpdateCatalogdNotification(int64_t* last_active_catalogd_ve
         request.__set_catalogd_version(active_catalogd_version);
         request.__set_catalogd_registration(catalogd_registration);
         status = client.DoRpc(
-            &StatestoreSubscriberClientWrapper::UpdateCatalogd, request, &response);
+            &StatestoreSubscriberClientWrapper::UpdateCatalogdWithRetry, request, &response);
         if (!status.ok()) {
           if (status.code() == TErrorCode::RPC_RECV_TIMEOUT) {
             // Add details to status to make it more useful, while preserving the stack
@@ -1727,7 +1727,7 @@ void Statestore::SendUpdateStatestoredRoleNotification(
           request.__set_catalogd_version(active_catalogd_version);
           request.__set_catalogd_registration(catalogd_registration);
         }
-        status = client.DoRpc(&StatestoreSubscriberClientWrapper::UpdateStatestoredRole,
+        status = client.DoRpc(&StatestoreSubscriberClientWrapper::UpdateStatestoredRoleWithRetry,
             request, &response);
         if (!status.ok() && status.code() == TErrorCode::RPC_RECV_TIMEOUT) {
           // Add details to status to make it more useful, while preserving the stack
@@ -1933,7 +1933,7 @@ Status Statestore::SendHaHandshake(TStatestoreHaHandshakeResponse* response) {
   StatestoreHaServiceConn::RpcStatus rpc_status =
       StatestoreHaServiceConn::DoRpcWithRetry(ha_client_cache_.get(),
           peer_statestore_ha_addr_,
-          &StatestoreHaServiceClientWrapper::StatestoreHaHandshake,
+          &StatestoreHaServiceClientWrapper::StatestoreHaHandshakeWithRetry,
           request,
           FLAGS_statestore_peer_cnxn_attempts,
           FLAGS_statestore_peer_cnxn_retry_interval_ms,
@@ -2182,7 +2182,7 @@ Status Statestore::SendHaHeartbeat() {
     request.__set_dst_statestore_id(peer_statestore_id_);
   }
   request.__set_src_statestore_id(statestore_id_);
-  status = client.DoRpc(&StatestoreHaServiceClientWrapper::StatestoreHaHeartbeat,
+  status = client.DoRpc(&StatestoreHaServiceClientWrapper::StatestoreHaHeartbeatWithRetry,
       request, &response);
   ha_standby_ss_failure_detector_->UpdateHeartbeat(STATESTORE_ID, status.ok());
   if (status.ok()) {

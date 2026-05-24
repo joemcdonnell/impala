@@ -141,6 +141,8 @@ set_dep_root(LIBUNWIND)
 set_dep_root(LLVM)
 set(LLVM_DEBUG_ROOT
     $ENV{IMPALA_TOOLCHAIN_PACKAGES_HOME}/llvm-$ENV{IMPALA_LLVM_DEBUG_VERSION})
+set(LLVM_PGO_ROOT
+    $ENV{IMPALA_TOOLCHAIN_PACKAGES_HOME}/llvm-$ENV{IMPALA_LLVM_PGO_VERSION})
 set_dep_root(LZ4)
 set_dep_root(ZSTD)
 set_dep_root(OPENLDAP)
@@ -263,6 +265,8 @@ find_package(GTest REQUIRED)
 IMPALA_ADD_THIRDPARTY_LIB(gtest ${GTEST_INCLUDE_DIR} ${GTEST_STATIC_LIB} ${GTEST_SHARED_LIB})
 
 # Use LLVM release binaries.
+# Use the LLVM PGO ROOT for release builds and llvm binaries
+set(LLVM_ROOT ${LLVM_PGO_ROOT})
 set(LLVM_BINARIES_ROOT ${LLVM_ROOT})
 find_package(LlvmBinaries REQUIRED)
 
@@ -356,7 +360,7 @@ message(STATUS "jwt-cpp include dir: " ${JWT_CPP_INCLUDE_DIR})
 
 # find rapidjson headers
 find_package(RapidJson REQUIRED)
-include_directories(${RAPIDJSON_INCLUDE_DIR})
+include_directories(SYSTEM ${RAPIDJSON_INCLUDE_DIR})
 message(STATUS "RapidJson include dir: " ${RAPIDJSON_INCLUDE_DIR})
 
 # find Avro headers and libs

@@ -993,7 +993,7 @@ void ClientRequestState::ExecLoadDataRequestImpl(bool exec_in_worker_thread) {
 
   TUpdateCatalogResponse resp;
   status = client.DoRpc(
-      &CatalogServiceClientWrapper::UpdateCatalog, catalog_update, &resp);
+      &CatalogServiceClientWrapper::UpdateCatalogWithRetry, catalog_update, &resp);
   query_events_->MarkEvent("UpdateCatalog finished");
   if (resp.__isset.profile) {
     for (const TEventSequence& catalog_timeline : resp.profile.event_sequences) {
@@ -1774,7 +1774,7 @@ Status ClientRequestState::UpdateCatalog() {
       Status status = DebugAction(query_options(), "CLIENT_REQUEST_UPDATE_CATALOG");
       if (status.ok()) {
         status = client.DoRpc(
-            &CatalogServiceClientWrapper::UpdateCatalog, catalog_update, &resp);
+            &CatalogServiceClientWrapper::UpdateCatalogWithRetry, catalog_update, &resp);
         query_events_->MarkEvent("UpdateCatalog finished");
       }
       if (resp.__isset.profile) {

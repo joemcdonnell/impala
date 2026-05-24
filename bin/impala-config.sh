@@ -81,13 +81,13 @@ export USE_AVRO_CPP=${USE_AVRO_CPP:=false}
 # moving to a different build of the toolchain, e.g. when a version is bumped or a
 # compile option is changed. The build id can be found in the output of the toolchain
 # build jobs, it is constructed from the build number and toolchain git hash prefix.
-export IMPALA_TOOLCHAIN_BUILD_ID_AARCH64=664-e32d1a8054
-export IMPALA_TOOLCHAIN_BUILD_ID_X86_64=664-e32d1a8054
+export IMPALA_TOOLCHAIN_BUILD_ID_AARCH64=667-a2b486bf5a
+export IMPALA_TOOLCHAIN_BUILD_ID_X86_64=667-a2b486bf5a
 export IMPALA_TOOLCHAIN_REPO=\
 ${IMPALA_TOOLCHAIN_REPO:-https://github.com/cloudera/native-toolchain.git}
 export IMPALA_TOOLCHAIN_BRANCH=${IMPALA_TOOLCHAIN_BRANCH:-master}
 export IMPALA_TOOLCHAIN_COMMIT_HASH=\
-${IMPALA_TOOLCHAIN_COMMIT_HASH-e32d1a805411c3f8933604ee0cf8f4fd1231f656}
+${IMPALA_TOOLCHAIN_COMMIT_HASH-a2b486bf5a}
 # Compare the build ref in build IDs by removing everything up-to-and-including the
 # first hyphen.
 if [ "${IMPALA_TOOLCHAIN_BUILD_ID_AARCH64#*-}" \
@@ -117,11 +117,11 @@ fi
 unset IMPALA_AVRO_URL
 export IMPALA_ABSEIL_CPP_VERSION=20250512.2
 unset IMPALA_ABSEIL_CPP_URL
-export IMPALA_BINUTILS_VERSION=2.42-p24
+export IMPALA_BINUTILS_VERSION=2.44
 unset IMPALA_BINUTILS_URL
 export IMPALA_BOOST_VERSION=1.74.0-p1
 unset IMPALA_BOOST_URL
-export IMPALA_BREAKPAD_VERSION=e09741c609dcd5f5274d40182c5e2cc9a002d5ba-p3
+export IMPALA_BREAKPAD_VERSION=e09741c609dcd5f5274d40182c5e2cc9a002d5ba-p4
 unset IMPALA_BREAKPAD_URL
 export IMPALA_BZIP2_VERSION=1.0.8-p2
 unset IMPALA_BZIP2_URL
@@ -135,9 +135,9 @@ export IMPALA_CURL_VERSION=8.17.0
 unset IMPALA_CURL_URL
 export IMPALA_CYRUS_SASL_VERSION=2.1.23
 unset IMPALA_CYRUS_SASL_URL
-export IMPALA_FLATBUFFERS_VERSION=1.9.0-p1
+export IMPALA_FLATBUFFERS_VERSION=1.9.0-p2
 unset IMPALA_FLATBUFFERS_URL
-export IMPALA_GCC_VERSION=10.4.0
+export IMPALA_GCC_VERSION=15.3.0
 unset IMPALA_GCC_URL
 export IMPALA_GDB_VERSION=12.1-p1
 unset IMPALA_GDB_URL
@@ -155,9 +155,9 @@ export IMPALA_LIBEV_VERSION=4.20-p1
 unset IMPALA_LIBEV_URL
 export IMPALA_LIBUNWIND_VERSION=1.7.2-p1
 unset IMPALA_LIBUNWIND_URL
-export IMPALA_LLVM_VERSION=15.0.7
+export IMPALA_LLVM_VERSION=19.1.1
 unset IMPALA_LLVM_URL
-export IMPALA_LLVM_ASAN_VERSION=15.0.7
+export IMPALA_LLVM_ASAN_VERSION=19.1.1
 unset IMPALA_LLVM_ASAN_URL
 export IMPALA_OPENTELEMETRY_CPP_VERSION=1.20.0-p1
 unset IMPALA_OPENTELEMTRY_CPP_URL
@@ -169,19 +169,21 @@ unset IMPALA_OPENTELEMTRY_CPP_URL
 # LLVM stores some files in subdirectories that are named after what
 # version it thinks it is. We might think it is 5.0.1-p1, based on a
 # patch we have applied, but LLVM thinks its version is 5.0.1.
-export IMPALA_LLVM_UBSAN_BASE_VERSION=15.0.7
+export IMPALA_LLVM_UBSAN_BASE_VERSION=19.1.1
 
 # Debug builds should use the release+asserts build to get additional coverage.
 # Don't use the LLVM debug build because the binaries are too large to distribute.
-export IMPALA_LLVM_DEBUG_VERSION=15.0.7
+export IMPALA_LLVM_DEBUG_VERSION=19.1.1-asserts
 unset IMPALA_LLVM_DEBUG_URL
+export IMPALA_LLVM_PGO_VERSION=19.1.1-pgo
+unset IMPALA_LLVM_PGO_URL
 export IMPALA_LZ4_VERSION=1.9.3
 unset IMPALA_LZ4_URL
 export IMPALA_ZSTD_VERSION=1.5.2
 unset IMPALA_ZSTD_URL
 export IMPALA_OPENLDAP_VERSION=2.5.20
 unset IMPALA_OPENLDAP_URL
-export IMPALA_ORC_VERSION=1.7.9-p11
+export IMPALA_ORC_VERSION=1.7.9-p12
 unset IMPALA_ORC_URL
 export IMPALA_PROTOBUF_VERSION=3.14.0
 unset IMPALA_PROTOBUF_URL
@@ -193,7 +195,7 @@ export IMPALA_MYSQL_JDBC_DRIVER_VERSION=8.2.0
 unset IMPALA_MYSQL_JDBC_DRIVER_URL
 export IMPALA_PYTHON_VERSION=3.11.14
 unset IMPALA_PYTHON_URL
-export IMPALA_RAPIDJSON_VERSION=1.1.0-p1
+export IMPALA_RAPIDJSON_VERSION=1.1.0-p6
 unset IMPALA_RAPIDJSON_URL
 export IMPALA_RE2_VERSION=2023-03-01
 unset IMPALA_RE2_URL
@@ -486,7 +488,7 @@ fi
 # respect this version). If upgrading IMPALA_THRIFT_PY_VERSION, also upgrade the
 # thrift version in shell/packaging/requirements.txt and
 # infra/python/deps/requirements.txt.
-export IMPALA_THRIFT_CPP_VERSION=0.16.0-p7
+export IMPALA_THRIFT_CPP_VERSION=0.16.0-p8
 unset IMPALA_THRIFT_CPP_URL
 if $USE_APACHE_HIVE_3 || $USE_APACHE_HIVE_2; then
   # Apache Hive 3 clients can't run on thrift versions >= 0.14 (IMPALA-11801)
@@ -494,10 +496,10 @@ if $USE_APACHE_HIVE_3 || $USE_APACHE_HIVE_2; then
   export IMPALA_THRIFT_JAVA_VERSION=${IMPALA_THRIFT_POM_VERSION}-p5
 else
   export IMPALA_THRIFT_POM_VERSION=0.16.0
-  export IMPALA_THRIFT_JAVA_VERSION=${IMPALA_THRIFT_POM_VERSION}-p7
+  export IMPALA_THRIFT_JAVA_VERSION=${IMPALA_THRIFT_POM_VERSION}-p8
 fi
 unset IMPALA_THRIFT_JAVA_URL
-export IMPALA_THRIFT_PY_VERSION=0.16.0-p7
+export IMPALA_THRIFT_PY_VERSION=0.16.0-p8
 unset IMPALA_THRIFT_PY_URL
 
 # Extract the first component of the hive version.
@@ -1165,7 +1167,7 @@ fi
 # overall build type) and does not apply when using a local Kudu build.
 export USE_KUDU_DEBUG_BUILD=${USE_KUDU_DEBUG_BUILD-false}
 
-export IMPALA_KUDU_VERSION=${IMPALA_KUDU_VERSION-"879a8f9e2"}
+export IMPALA_KUDU_VERSION=${IMPALA_KUDU_VERSION-"44b045662"}
 export IMPALA_KUDU_HOME=${IMPALA_TOOLCHAIN_PACKAGES_HOME}/kudu-$IMPALA_KUDU_VERSION
 export IMPALA_KUDU_JAVA_HOME=\
 ${IMPALA_TOOLCHAIN_PACKAGES_HOME}/kudu-${IMPALA_KUDU_VERSION}/java

@@ -173,14 +173,13 @@ void TestMaxMessageSize(std::string subscriber_id, bool expect_throw,
   ASSERT_OK(client.Open());
   TRegisterSubscriberRequest req;
   TRegisterSubscriberResponse resp;
-  bool send_done = false;
 
   req.subscriber_id = move(subscriber_id);
   if (expect_throw) {
     EXPECT_THROW(
-        client.iface()->RegisterSubscriber(resp, req, &send_done), TTransportException);
+        client.iface()->RegisterSubscriber(resp, req), TTransportException);
   } else {
-    EXPECT_NO_THROW(client.iface()->RegisterSubscriber(resp, req, &send_done));
+    EXPECT_NO_THROW(client.iface()->RegisterSubscriber(resp, req));
   }
 }
 
@@ -216,9 +215,8 @@ TEST_P(ThriftKerberizedParamsTest, SslConnectivity) {
       "localhost", port, "", nullptr, true);
   ASSERT_OK(ssl_client.Open());
   TRegisterSubscriberResponse resp;
-  bool send_done = false;
   EXPECT_NO_THROW({ssl_client.iface()->RegisterSubscriber(resp,
-      TRegisterSubscriberRequest(), &send_done);
+      TRegisterSubscriberRequest());
   });
 
   // Disable SSL for this client.
@@ -228,10 +226,9 @@ TEST_P(ThriftKerberizedParamsTest, SslConnectivity) {
   if (GetParam() == KERBEROS_OFF) {
     // When Kerberos is OFF, Open() succeeds as there's no data transfer over the wire.
     ASSERT_OK(non_ssl_client.Open());
-    send_done = false;
     // Verify that data transfer over the wire is not possible.
     EXPECT_THROW(non_ssl_client.iface()->RegisterSubscriber(
-        resp, TRegisterSubscriberRequest(), &send_done), TTransportException);
+        resp, TRegisterSubscriberRequest()), TTransportException);
   } else {
     // When Kerberos is ON, the SASL negotiation happens inside Open(). We expect that to
     // fail beacuse the server expects the client to negotiate over an encrypted
@@ -283,9 +280,8 @@ TEST(PasswordProtectedPemFile, CorrectOperation) {
       "localhost", port, "", nullptr, true);
   ASSERT_OK(ssl_client.Open());
   TRegisterSubscriberResponse resp;
-  bool send_done = false;
   EXPECT_NO_THROW({ssl_client.iface()->RegisterSubscriber(resp,
-      TRegisterSubscriberRequest(), &send_done);});
+      TRegisterSubscriberRequest());});
 }
 
 TEST(PasswordProtectedPemFile, BadPassword) {
@@ -328,9 +324,8 @@ TEST(SslTest, ClientBeforeServer) {
   ASSERT_OK(server->Start());
 
   ASSERT_OK(ssl_client.Open());
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
-  ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(), &send_done);
+  ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest());
 }
 
 TEST(SslTest, BadCiphers) {
@@ -386,10 +381,9 @@ TEST(SslTest, MismatchedCiphers) {
   // Failure to negotiate a cipher will show up when data is sent, not when socket is
   // opened.
   EXPECT_OK(ssl_client.Open());
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_THROW(ssl_client.iface()->RegisterSubscriber(
-                   resp, TRegisterSubscriberRequest(), &send_done),
+                   resp, TRegisterSubscriberRequest()),
       TTransportException);
 }
 
@@ -453,18 +447,17 @@ TEST(SslTest, TLSVersionControl) {
         continue;
       }
       EXPECT_OK(ssl_client.Open());
-      bool send_done = false;
       TRegisterSubscriberResponse resp;
       if (config.whitelist.find(client_version.second) == config.whitelist.end()) {
         EXPECT_THROW(ssl_client.iface()->RegisterSubscriber(
-                         resp, TRegisterSubscriberRequest(), &send_done),
+                         resp, TRegisterSubscriberRequest()),
             TTransportException)
             << "TLS version: " << config.server_version
             << ", client version: " << client_version.first;
       } else {
         EXPECT_NO_THROW({
           ssl_client.iface()->RegisterSubscriber(
-              resp, TRegisterSubscriberRequest(), &send_done);
+              resp, TRegisterSubscriberRequest());
         }) << "TLS version: "
            << config.server_version << ", client version: " << client_version.first;
       }
@@ -493,11 +486,10 @@ TEST(SslTest, MatchedCiphers) {
 
   EXPECT_OK(ssl_client.Open());
 
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_NO_THROW({
     ssl_client.iface()->RegisterSubscriber(
-        resp, TRegisterSubscriberRequest(), &send_done);
+        resp, TRegisterSubscriberRequest());
   });
 }
 
@@ -523,11 +515,10 @@ TEST(SslTest, OverlappingMatchedCiphers) {
 
   EXPECT_OK(ssl_client.Open());
 
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_NO_THROW({
         ssl_client.iface()->RegisterSubscriber(
-            resp, TRegisterSubscriberRequest(), &send_done);
+            resp, TRegisterSubscriberRequest());
       });
 }
 
@@ -583,10 +574,9 @@ TEST(SslTest, MismatchedTlsCiphersuites) {
   // Failure to negotiate a cipher will show up when data is sent, not when socket is
   // opened.
   EXPECT_OK(ssl_client.Open());
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_THROW(ssl_client.iface()->RegisterSubscriber(
-                   resp, TRegisterSubscriberRequest(), &send_done),
+                   resp, TRegisterSubscriberRequest()),
       TTransportException);
 }
 
@@ -611,10 +601,9 @@ TEST(SslTest, MismatchTls12ServerTls13Client) {
   // Failure to negotiate a cipher will show up when data is sent, not when socket is
   // opened.
   EXPECT_OK(ssl_client.Open());
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_THROW(ssl_client.iface()->RegisterSubscriber(
-                   resp, TRegisterSubscriberRequest(), &send_done),
+                   resp, TRegisterSubscriberRequest()),
       TTransportException);
 }
 
@@ -641,10 +630,9 @@ TEST(SslTest, MismatchTls13ServerTls12Client) {
   // Failure to negotiate a cipher will show up when data is sent, not when socket is
   // opened.
   EXPECT_OK(ssl_client.Open());
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_THROW(ssl_client.iface()->RegisterSubscriber(
-                   resp, TRegisterSubscriberRequest(), &send_done),
+                   resp, TRegisterSubscriberRequest()),
       TTransportException);
 }
 
@@ -668,11 +656,10 @@ TEST(SslTest, MatchedTlsCiphersuites) {
 
   EXPECT_OK(ssl_client.Open());
 
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_NO_THROW({
     ssl_client.iface()->RegisterSubscriber(
-        resp, TRegisterSubscriberRequest(), &send_done);
+        resp, TRegisterSubscriberRequest());
   });
 }
 
@@ -697,11 +684,10 @@ TEST(SslTest, OverlappingMatchedTlsCiphersuites) {
 
   EXPECT_OK(ssl_client.Open());
 
-  bool send_done = false;
   TRegisterSubscriberResponse resp;
   EXPECT_NO_THROW({
         ssl_client.iface()->RegisterSubscriber(
-            resp, TRegisterSubscriberRequest(), &send_done);
+            resp, TRegisterSubscriberRequest());
       });
 }
 
@@ -732,11 +718,9 @@ TEST(ConcurrencyTest, MaxConcurrentConnections) {
         ThriftClient<StatestoreServiceClientWrapper> client("localhost", port, "",
             nullptr, false);
         EXPECT_OK(client.Open());
-        bool send_done = false;
         TRegisterSubscriberResponse resp;
         EXPECT_NO_THROW({
-            client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(),
-                &send_done);
+            client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest());
           });
         int connection_count = ++num_concurrent_connections;
         // Check that we have not exceeded the expected limit
@@ -769,15 +753,12 @@ TEST(NoPasswordPemFile, BadServerCertificate) {
       "localhost", port, "", nullptr, true);
   EXPECT_OK(ssl_client.Open());
   TRegisterSubscriberResponse resp;
-  bool send_done = false;
-  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(),
-      &send_done);
+  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest());
   }, TSSLException);
   // Close and reopen the socket
   ssl_client.Close();
   EXPECT_OK(ssl_client.Open());
-  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest(),
-      &send_done);
+  EXPECT_THROW({ssl_client.iface()->RegisterSubscriber(resp, TRegisterSubscriberRequest());
   }, TSSLException);
 }
 

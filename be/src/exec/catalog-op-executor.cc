@@ -117,7 +117,7 @@ Status CatalogOpExecutor::Exec(const TCatalogOpRequest& request) {
       CatalogServiceConnection::RpcStatus rpc_status =
           CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
               *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-              &CatalogServiceClientWrapper::ExecDdl, request.ddl_params,
+              &CatalogServiceClientWrapper::ExecDdlWithRetry, request.ddl_params,
               FLAGS_catalog_client_connection_num_retries,
               FLAGS_catalog_client_rpc_retry_interval_ms,
               [&attempt]() { return CatalogRpcDebugFn(&attempt); }, exec_response_.get());
@@ -155,7 +155,7 @@ Status CatalogOpExecutor::Exec(const TCatalogOpRequest& request) {
       CatalogServiceConnection::RpcStatus rpc_status =
           CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
               *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-              &CatalogServiceClientWrapper::ResetMetadata, request.reset_metadata_params,
+              &CatalogServiceClientWrapper::ResetMetadataWithRetry, request.reset_metadata_params,
               FLAGS_catalog_client_connection_num_retries,
               FLAGS_catalog_client_rpc_retry_interval_ms,
               [&attempt]() { return CatalogRpcDebugFn(&attempt); }, &response);
@@ -380,7 +380,7 @@ Status CatalogOpExecutor::GetCatalogObject(const TCatalogObject& object_desc,
   CatalogServiceConnection::RpcStatus rpc_status =
       CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::GetCatalogObject, request,
+          &CatalogServiceClientWrapper::GetCatalogObjectWithRetry, request,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, &response);
@@ -404,7 +404,7 @@ Status CatalogOpExecutor::GetPartialCatalogObject(
   CatalogServiceConnection::RpcStatus rpc_status =
       CatalogServiceConnection::DoRpcWithRetry(client_cache_ptr,
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::GetPartialCatalogObject, req,
+          &CatalogServiceClientWrapper::GetPartialCatalogObjectWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, resp);
@@ -427,7 +427,7 @@ Status CatalogOpExecutor::PrioritizeLoad(const TPrioritizeLoadRequest& req,
       CatalogServiceConnection::DoRpcWithRetry(
           env_->catalogd_lightweight_req_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::PrioritizeLoad, req,
+          &CatalogServiceClientWrapper::PrioritizeLoadWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, result);
@@ -441,7 +441,7 @@ Status CatalogOpExecutor::GetPartitionStats(
   CatalogServiceConnection::RpcStatus rpc_status =
       CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::GetPartitionStats, req,
+          &CatalogServiceClientWrapper::GetPartitionStatsWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, result);
@@ -459,7 +459,7 @@ Status CatalogOpExecutor::UpdateTableUsage(const TUpdateTableUsageRequest& req,
           // requests.
           env_->catalogd_lightweight_req_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::UpdateTableUsage, req,
+          &CatalogServiceClientWrapper::UpdateTableUsageWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, resp);
@@ -474,7 +474,7 @@ Status CatalogOpExecutor::GetNullPartitionName(
       CatalogServiceConnection::DoRpcWithRetry(
           env_->catalogd_lightweight_req_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::GetNullPartitionName, req,
+          &CatalogServiceClientWrapper::GetNullPartitionNameWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, result);
@@ -489,7 +489,7 @@ Status CatalogOpExecutor::GetLatestCompactions(
       CatalogServiceConnection::DoRpcWithRetry(
           env_->catalogd_lightweight_req_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::GetLatestCompactions, req,
+          &CatalogServiceClientWrapper::GetLatestCompactionsWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, result);
@@ -504,7 +504,7 @@ Status CatalogOpExecutor::SetEventProcessorStatus(
   CatalogServiceConnection::RpcStatus rpc_status =
       CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress(),
-          &CatalogServiceClientWrapper::SetEventProcessorStatus, req,
+          &CatalogServiceClientWrapper::SetEventProcessorStatusWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, result);
@@ -523,7 +523,7 @@ Status CatalogOpExecutor::WaitForHmsEvent(const TWaitForHmsEventRequest& req,
   CatalogServiceConnection::RpcStatus rpc_status =
       CatalogServiceConnection::DoRpcWithRetry(env_->catalogd_client_cache(),
           *ExecEnv::GetInstance()->GetCatalogdAddress().get(),
-          &CatalogServiceClientWrapper::WaitForHmsEvent, req,
+          &CatalogServiceClientWrapper::WaitForHmsEventWithRetry, req,
           FLAGS_catalog_client_connection_num_retries,
           FLAGS_catalog_client_rpc_retry_interval_ms,
           [&attempt]() { return CatalogRpcDebugFn(&attempt); }, resp);

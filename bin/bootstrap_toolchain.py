@@ -465,11 +465,13 @@ def get_toolchain_downloads():
   toolchain_packages = []
   # The LLVM and GCC packages are the largest packages in the toolchain (Kudu is handled
   # separately). Sort them first so their downloads start as soon as possible.
-  llvm_package = ToolchainPackage("llvm")
-  #llvm_package_asserts = ToolchainPackage(
-  #    "llvm", explicit_version=os.environ.get("IMPALA_LLVM_DEBUG_VERSION"))
+  # llvm_package = ToolchainPackage("llvm")
+  llvm_package_asserts = ToolchainPackage(
+      "llvm", explicit_version=os.environ.get("IMPALA_LLVM_DEBUG_VERSION"))
+  llvm_package_pgo = ToolchainPackage(
+      "llvm", explicit_version=os.environ.get("IMPALA_LLVM_PGO_VERSION"))
   gcc_package = ToolchainPackage("gcc")
-  toolchain_packages += [llvm_package, gcc_package]
+  toolchain_packages += [llvm_package_asserts, llvm_package_pgo, gcc_package]
   toolchain_packages += [ToolchainPackage(p) for p in
       ["abseil-cpp", "arrow", "avro", "binutils", "boost", "breakpad", "bzip2",
        "calloncehack", "cctz", "cloudflarezlib", "cmake", "crcutil", "curl",

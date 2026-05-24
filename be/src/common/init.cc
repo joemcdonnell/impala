@@ -19,6 +19,7 @@
 
 #include <csignal>
 #include <regex>
+#include <string_view>
 #include <boost/filesystem.hpp>
 #include <third_party/lss/linux_syscall_support.h>
 
@@ -67,6 +68,7 @@
 
 #include "common/names.h"
 
+using std::string_view;
 using namespace impala;
 namespace filesystem = boost::filesystem;
 
@@ -380,7 +382,7 @@ static Status JavaAddOpens() {
     val_out << current_val_c;
   }
 
-  for (const string& param : {
+  for (const string_view param : {
     // Needed for jamm to access lambdas.
     "--add-opens=java.base/java.lang=ALL-UNNAMED",
     "--add-opens=java.base/java.nio=ALL-UNNAMED",
