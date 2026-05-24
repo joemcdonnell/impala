@@ -1003,7 +1003,7 @@ class LlvmCodeGen {
     /// Handler function that sets the state on an instance of this class which is
     /// accessible via the LlvmCodeGen object passed to it using the 'context'
     /// input parameter.
-    static void DiagnosticHandlerFn(const llvm::DiagnosticInfo &info, void *context);
+    static void DiagnosticHandlerFn(const llvm::DiagnosticInfo *info, void *context);
 
    private:
     /// Contains the last error that was reported via DiagnosticHandlerFn().

@@ -1,9 +1,8 @@
 //===- SectionMemoryManager.h - Memory manager for MCJIT/RtDyld -*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,15 +15,16 @@
 #define LLVM_EXECUTIONENGINE_SECTIONMEMORYMANAGER_H
 
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/Support/Memory.h"
 #include <cstdint>
 #include <string>
 #include <system_error>
 
-// Impala: namespace changed to avoid symbol collisions with LLVM libraries.
+// Impala: https://github.com/llvm/llvm-project/pull/71968 applied on top of LLVM 19.1.1.
+// namespace changed to avoid symbol collisions with LLVM libraries.
 namespace sys = llvm::sys;
+using llvm::Align;
 using llvm::RTDyldMemoryManager;
 using llvm::SmallVector;
 using llvm::StringRef;
@@ -46,26 +46,91 @@ namespace impala {
 /// directly.  Clients of MCJIT should call MCJIT::finalizeObject.
 class SectionMemoryManager : public RTDyldMemoryManager {
 public:
-  SectionMemoryManager() = default;
-  SectionMemoryManager(const SectionMemoryManager&) = delete;
-  void operator=(const SectionMemoryManager&) = delete;
+  /// This enum describes the various reasons to allocate pages from
+  /// allocateMappedMemory.
+  enum class AllocationPurpose {
+    Code,
+    ROData,
+    RWData,
+  };
+
+  /// Implementations of this interface are used by SectionMemoryManager to
+  /// request pages from the operating system.
+  class MemoryMapper {
+  public:
+    /// This method attempts to allocate \p NumBytes bytes of virtual memory for
+    /// \p Purpose.  \p NearBlock may point to an existing allocation, in which
+    /// case an attempt is made to allocate more memory near the existing block.
+    /// The actual allocated address is not guaranteed to be near the requested
+    /// address.  \p Flags is used to set the initial protection flags for the
+    /// block of the memory.  \p EC [out] returns an object describing any error
+    /// that occurs.
+    ///
+    /// This method may allocate more than the number of bytes requested.  The
+    /// actual number of bytes allocated is indicated in the returned
+    /// MemoryBlock.
+    ///
+    /// The start of the allocated block must be aligned with the system
+    /// allocation granularity (64K on Windows, page size on Linux).  If the
+    /// address following \p NearBlock is not so aligned, it will be rounded up
+    /// to the next allocation granularity boundary.
+    ///
+    /// \r a non-null MemoryBlock if the function was successful, otherwise a
+    /// null MemoryBlock with \p EC describing the error.
+    virtual sys::MemoryBlock
+    allocateMappedMemory(AllocationPurpose Purpose, size_t NumBytes,
+                         const sys::MemoryBlock *const NearBlock,
+                         unsigned Flags, std::error_code &EC) = 0;
+
+    /// This method sets the protection flags for a block of memory to the state
+    /// specified by \p Flags.  The behavior is not specified if the memory was
+    /// not allocated using the allocateMappedMemory method.
+    /// \p Block describes the memory block to be protected.
+    /// \p Flags specifies the new protection state to be assigned to the block.
+    ///
+    /// If \p Flags is MF_WRITE, the actual behavior varies with the operating
+    /// system (i.e. MF_READ | MF_WRITE on Windows) and the target architecture
+    /// (i.e. MF_WRITE -> MF_READ | MF_WRITE on i386).
+    ///
+    /// \r error_success if the function was successful, or an error_code
+    /// describing the failure if an error occurred.
+    virtual std::error_code protectMappedMemory(const sys::MemoryBlock &Block,
+                                                unsigned Flags) = 0;
+
+    /// This method releases a block of memory that was allocated with the
+    /// allocateMappedMemory method. It should not be used to release any memory
+    /// block allocated any other way.
+    /// \p Block describes the memory to be released.
+    ///
+    /// \r error_success if the function was successful, or an error_code
+    /// describing the failure if an error occurred.
+    virtual std::error_code releaseMappedMemory(sys::MemoryBlock &M) = 0;
+
+    virtual ~MemoryMapper();
+  };
+
+  /// Creates a SectionMemoryManager instance with \p MM as the associated
+  /// memory mapper.  If \p MM is nullptr then a default memory mapper is used
+  /// that directly calls into the operating system.
+  ///
+  /// If \p ReserveAlloc is true all memory will be pre-allocated, and any
+  /// attempts to allocate beyond pre-allocated memory will fail.
+  SectionMemoryManager(MemoryMapper *MM = nullptr, bool ReserveAlloc = false);
+  SectionMemoryManager(const SectionMemoryManager &) = delete;
+  void operator=(const SectionMemoryManager &) = delete;
   ~SectionMemoryManager() override;
 
-  /// Impala: enable reserveAllocationSpace callback.
-  bool needsToReserveAllocationSpace() override { return true; }
+  /// Enable reserveAllocationSpace when requested.
+  bool needsToReserveAllocationSpace() override { return ReserveAllocation; }
 
-  /// Impala: Provides an option to reserveAllocationSpace and pre-allocate all
-  /// memory in a single block. This is required for ARM where ADRP instructions
-  /// have a limit of 4GB offsets. Large memory systems may allocate sections
-  /// further apart than this unless we pre-allocate.
-  ///
-  /// Should only be called once. Later calls might re-use free blocks rather
-  /// than allocating a new contiguous block.
-  void reserveAllocationSpace(uintptr_t CodeSize, uint32_t CodeAlign,
-      uintptr_t RODataSize, uint32_t RODataAlign,
-      uintptr_t RWDataSize, uint32_t RWDataAlign) override;
+  /// Implements allocating all memory in a single block. This is required to
+  /// limit memory offsets to fit the ARM ABI; large memory systems may
+  /// otherwise allocate separate sections too far apart.
+  void reserveAllocationSpace(uintptr_t CodeSize, Align CodeAlign,
+                              uintptr_t RODataSize, Align RODataAlign,
+                              uintptr_t RWDataSize, Align RWDataAlign) override;
 
-  /// \brief Allocates a memory block of (at least) the given size suitable for
+  /// Allocates a memory block of (at least) the given size suitable for
   /// executable code.
   ///
   /// The value of \p Alignment must be a power of two.  If \p Alignment is zero
@@ -74,7 +139,7 @@ public:
                                unsigned SectionID,
                                StringRef SectionName) override;
 
-  /// \brief Allocates a memory block of (at least) the given size suitable for
+  /// Allocates a memory block of (at least) the given size suitable for
   /// executable code.
   ///
   /// The value of \p Alignment must be a power of two.  If \p Alignment is zero
@@ -83,7 +148,7 @@ public:
                                unsigned SectionID, StringRef SectionName,
                                bool isReadOnly) override;
 
-  /// \brief Update section-specific memory permissions and other attributes.
+  /// Update section-specific memory permissions and other attributes.
   ///
   /// This method is called when object loading is complete and section page
   /// permissions can be applied.  It is up to the memory manager implementation
@@ -96,7 +161,7 @@ public:
   /// \returns true if an error occurred, false otherwise.
   bool finalizeMemory(std::string *ErrMsg = nullptr) override;
 
-  /// \brief Invalidate instruction cache for code sections.
+  /// Invalidate instruction cache for code sections.
   ///
   /// Some platforms with separate data cache and instruction cache require
   /// explicit cache flush, otherwise JIT code manipulations (like resolved
@@ -130,20 +195,24 @@ private:
     sys::MemoryBlock Near;
   };
 
-  uint8_t *allocateSection(MemoryGroup &MemGroup, uintptr_t Size,
+  uint8_t *allocateSection(AllocationPurpose Purpose, uintptr_t Size,
                            unsigned Alignment);
 
   std::error_code applyMemoryGroupPermissions(MemoryGroup &MemGroup,
                                               unsigned Permissions);
 
-  // Impala: added to identify possible MemoryBlock re-use
   bool hasSpace(const MemoryGroup &MemGroup, uintptr_t Size) const;
+
+  void anchor() override;
 
   MemoryGroup CodeMem;
   MemoryGroup RWDataMem;
   MemoryGroup RODataMem;
+  MemoryMapper *MMapper;
+  std::unique_ptr<MemoryMapper> OwnedMMapper;
+  bool ReserveAllocation;
 };
 
-} // end namespace impala
+} // end namespace llvm
 
-#endif // LLVM_EXECUTION_ENGINE_SECTION_MEMORY_MANAGER_H
+#endif // LLVM_EXECUTIONENGINE_SECTIONMEMORYMANAGER_H

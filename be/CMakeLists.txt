@@ -102,9 +102,8 @@ SET(CXX_COMMON_FLAGS "${CXX_COMMON_FLAGS} -B $ENV{IMPALA_TOOLCHAIN_PACKAGES_HOME
 #  -Wno-deprecated-declarations: OpenSSL3 deprecated various APIs currently used by
 #      Impala, so this disables those warnings when using OpenSSL3 until they can be
 #      addressed. See IMPALA-12226.
-if (OPENSSL_VERSION VERSION_GREATER_EQUAL 3)
-  SET(CXX_COMMON_FLAGS "${CXX_COMMON_FLAGS} -Wno-deprecated-declarations")
-endif()
+# GCC-14/15: Now have issues with iterator
+SET(CXX_COMMON_FLAGS "${CXX_COMMON_FLAGS} -Wno-deprecated-declarations")
 IF($ENV{IMPALA_LINKER} STREQUAL "gold")
   SET(CXX_COMMON_FLAGS "${CXX_COMMON_FLAGS} -fuse-ld=gold")
 ENDIF()
@@ -166,6 +165,7 @@ SET(CXX_GCC_FLAGS "-g -Wno-unused-local-typedefs -gdwarf-4 -Wno-maybe-uninitiali
 #    are not clean yet (including some LLVM code).
 # TODO: These should be cleaned up and reenabled.
 SET(CXX_GCC_FLAGS "${CXX_GCC_FLAGS} -Wno-class-memaccess -Wno-init-list-lifetime")
+SET(CXX_GCC_FLAGS "${CXX_GCC_FLAGS} -Wno-invalid-memory-model")
 
 # compiler flags for different build types (run 'cmake -DCMAKE_BUILD_TYPE=<type> .')
 # For CMAKE_BUILD_TYPE=DEBUG_NOOPT
@@ -358,9 +358,12 @@ set(CLANG_IR_CXX_FLAGS "-emit-llvm" "-c" "-std=c++17" "-DIR_COMPILE" "-DHAVE_INT
 #  -Wno-deprecated-declarations: OpenSSL3 deprecated various APIs currently used by
 #      Impala, so this disables those warnings when using OpenSSL3 until they can be
 #      addressed. See IMPALA-12226.
-if (OPENSSL_VERSION VERSION_GREATER_EQUAL 3)
-  SET(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-Wno-deprecated-declarations")
-endif()
+# GCC 14/15 - now have issues with iterator
+SET(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-Wno-deprecated-declarations")
+# -Wno-vla-cxx-extension: We use C99-style variable-length arrays in C++ code.
+SET(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-Wno-vla-cxx-extension")
+# Boost needs this to avoid warnings about converting enums to constexpr values.
+SET(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-Wno-enum-constexpr-conversion")
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
   set(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-march=armv8-a+crc"
@@ -390,9 +393,11 @@ IF($ENV{ENABLE_IMPALA_IR_DEBUG_INFO} STREQUAL "true")
   SET(CLANG_IR_CXX_FLAGS "${CLANG_IR_CXX_FLAGS}" "-g")
 endif()
 
+set(CMAKE_C_FLAGS "-B $ENV{IMPALA_TOOLCHAIN_PACKAGES_HOME}/binutils-$ENV{IMPALA_BINUTILS_VERSION}/bin/")
+
 # Flags to pass to LLVM's opt to further optimize cross-compiled IR.
 #  -inline: inline with low threshold to get rid of trivial accessor functions.
-set(LLVM_OPT_IR_FLAGS "-inline" "-inlinehint-threshold=10" "-inline-threshold=10")
+# set(LLVM_OPT_IR_FLAGS "-inline" "-inlinehint-threshold=10" "-inline-threshold=10")
 
 # Additional compile flags that will hide symbols by default, e.g. for building
 # UDFs. We have both a concatenated string version and a list version for convenience,

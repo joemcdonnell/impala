@@ -33,12 +33,7 @@ class StatestoreSubscriberClientWrapper : public StatestoreSubscriberClient {
        std::shared_ptr<::apache::thrift::protocol::TProtocol> oprot)
      : StatestoreSubscriberClient(move(iprot), move(oprot)) {}
 
-/// We intentionally disable this clang warning as we intend to hide the
-/// the same-named functions defined in the base class.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Woverloaded-virtual"
-
-   void Heartbeat(THeartbeatResponse& _return, const THeartbeatRequest& params,
+   void HeartbeatWithRetry(THeartbeatResponse& _return, const THeartbeatRequest& params,
        bool* send_done) {
      DCHECK(!*send_done);
      send_Heartbeat(params);
@@ -46,7 +41,7 @@ class StatestoreSubscriberClientWrapper : public StatestoreSubscriberClient {
      recv_Heartbeat(_return);
    }
 
-   void UpdateState(TUpdateStateResponse& _return, const TUpdateStateRequest& params,
+   void UpdateStateWithRetry(TUpdateStateResponse& _return, const TUpdateStateRequest& params,
        bool* send_done) {
      DCHECK(!*send_done);
      send_UpdateState(params);
@@ -54,7 +49,7 @@ class StatestoreSubscriberClientWrapper : public StatestoreSubscriberClient {
      recv_UpdateState(_return);
    }
 
-   void UpdateCatalogd(TUpdateCatalogdResponse& _return,
+   void UpdateCatalogdWithRetry(TUpdateCatalogdResponse& _return,
        const TUpdateCatalogdRequest& params, bool* send_done) {
      DCHECK(!*send_done);
      send_UpdateCatalogd(params);
@@ -62,15 +57,13 @@ class StatestoreSubscriberClientWrapper : public StatestoreSubscriberClient {
      recv_UpdateCatalogd(_return);
    }
 
-   void UpdateStatestoredRole(TUpdateStatestoredRoleResponse& _return,
+   void UpdateStatestoredRoleWithRetry(TUpdateStatestoredRoleResponse& _return,
        const TUpdateStatestoredRoleRequest& params, bool* send_done) {
      DCHECK(!*send_done);
      send_UpdateStatestoredRole(params);
      *send_done = true;
      recv_UpdateStatestoredRole(_return);
    }
-
-#pragma clang diagnostic pop
 };
 
 }

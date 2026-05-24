@@ -34,12 +34,7 @@ class StatestoreServiceClientWrapper : public StatestoreServiceClient {
       std::shared_ptr<::apache::thrift::protocol::TProtocol> oprot)
     : StatestoreServiceClient(move(iprot), move(oprot)) {}
 
-/// We intentionally disable this clang warning as we intend to hide the
-/// the same-named functions defined in the base class.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Woverloaded-virtual"
-
-  void RegisterSubscriber(TRegisterSubscriberResponse& _return,
+  void RegisterSubscriberWithRetry(TRegisterSubscriberResponse& _return,
       const TRegisterSubscriberRequest& params, bool* send_done) {
     DCHECK(!*send_done);
     send_RegisterSubscriber(params);
@@ -47,22 +42,13 @@ class StatestoreServiceClientWrapper : public StatestoreServiceClient {
     recv_RegisterSubscriber(_return);
   }
 
-  void GetProtocolVersion(TGetProtocolVersionResponse& _return,
+  void GetProtocolVersionWithRetry(TGetProtocolVersionResponse& _return,
       const TGetProtocolVersionRequest& params, bool* send_done) {
     DCHECK(!*send_done);
     send_GetProtocolVersion(params);
     *send_done = true;
     recv_GetProtocolVersion(_return);
   }
-
-  void SetStatestoreDebugAction(TSetStatestoreDebugActionResponse& _return,
-      const TSetStatestoreDebugActionRequest& params, bool* send_done) {
-    DCHECK(!*send_done);
-    send_SetStatestoreDebugAction(params);
-    *send_done = true;
-    recv_SetStatestoreDebugAction(_return);
-  }
-#pragma clang diagnostic pop
 };
 
 class StatestoreHaServiceClientWrapper : public StatestoreHaServiceClient {
@@ -76,12 +62,7 @@ class StatestoreHaServiceClientWrapper : public StatestoreHaServiceClient {
       std::shared_ptr<::apache::thrift::protocol::TProtocol> oprot)
     : StatestoreHaServiceClient(std::move(iprot), std::move(oprot)) {}
 
-/// We intentionally disable this clang warning as we intend to hide the
-/// the same-named functions defined in the base class.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Woverloaded-virtual"
-
-  void StatestoreHaHandshake(TStatestoreHaHandshakeResponse& _return,
+  void StatestoreHaHandshakeWithRetry(TStatestoreHaHandshakeResponse& _return,
       const TStatestoreHaHandshakeRequest& params, bool* send_done) {
     DCHECK(!*send_done);
     send_StatestoreHaHandshake(params);
@@ -89,15 +70,13 @@ class StatestoreHaServiceClientWrapper : public StatestoreHaServiceClient {
     recv_StatestoreHaHandshake(_return);
   }
 
-  void StatestoreHaHeartbeat(TStatestoreHaHeartbeatResponse& _return,
+  void StatestoreHaHeartbeatWithRetry(TStatestoreHaHeartbeatResponse& _return,
       const TStatestoreHaHeartbeatRequest& params, bool* send_done) {
     DCHECK(!*send_done);
     send_StatestoreHaHeartbeat(params);
     *send_done = true;
     recv_StatestoreHaHeartbeat(_return);
   }
-
-#pragma clang diagnostic pop
 };
 
 }

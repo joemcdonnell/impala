@@ -46,9 +46,9 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/ErrorHandling.h>
-#include <llvm/Support/Host.h>
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/TargetParser/Host.h>
 #include <llvm/Transforms/IPO/GlobalDCE.h>
 #include <llvm/Transforms/IPO/Internalize.h>
 #include <llvm/Transforms/Scalar.h>
@@ -485,12 +485,12 @@ Status LlvmCodeGen::CreateImpalaCodegen(FragmentState* state,
 Status LlvmCodeGen::Init(unique_ptr<llvm::Module> module) {
   DCHECK(module != nullptr);
 
-  llvm::CodeGenOpt::Level opt_level = llvm::CodeGenOpt::Aggressive;
+  llvm::CodeGenOptLevel opt_level = llvm::CodeGenOptLevel::Aggressive;
 #ifndef NDEBUG
   // For debug builds, don't generate JIT compiled optimized assembly.
   // This takes a non-neglible amount of time (~.5 ms per function) and
   // blows up the fe tests (which take ~10-20 ms each).
-  opt_level = llvm::CodeGenOpt::None;
+  opt_level = llvm::CodeGenOptLevel::None;
 #endif
   module_ = module.get();
   llvm::EngineBuilder builder(move(module));
@@ -569,8 +569,7 @@ void LlvmCodeGen::EnableOptimizations(bool enable) {
 void LlvmCodeGen::GetHostCPUAttrs(std::unordered_set<string>* attrs) {
   // LLVM's ExecutionEngine expects features to be enabled or disabled with a list
   // of strings like ["+feature1", "-feature2"].
-  llvm::StringMap<bool> cpu_features;
-  llvm::sys::getHostCPUFeatures(cpu_features);
+  llvm::StringMap<bool> cpu_features = llvm::sys::getHostCPUFeatures();
   for (const llvm::StringMapEntry<bool>& entry : cpu_features) {
     attrs->emplace(Substitute("$0$1", entry.second ? "+" : "-", entry.first().data()));
   }
@@ -670,8 +669,11 @@ llvm::Value* LlvmCodeGen::GetStringConstant(
   // Create a global string with private linkage.
   llvm::Constant* const_string =
       llvm::ConstantDataArray::getString(context(), llvm::StringRef(data, len), false);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(*module_, const_string->getType(),
       true, llvm::GlobalValue::PrivateLinkage, const_string);
+#pragma GCC diagnostic pop
   // With opaque pointers gv is already ptr to the first byte.
   return gv;
 }
@@ -1981,8 +1983,11 @@ llvm::Value* LlvmCodeGen::GetPtrTo(
 
 llvm::Constant* LlvmCodeGen::ConstantToGVPtr(
     llvm::Type* type, llvm::Constant* ir_constant, const string& name) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(
       *module_, type, true, llvm::GlobalValue::PrivateLinkage, ir_constant, name);
+#pragma GCC diagnostic pop
   return gv;
 }
 
@@ -2020,14 +2025,14 @@ std::unordered_set<string> LlvmCodeGen::ApplyCpuAttrWhitelist(
 }
 
 void LlvmCodeGen::DiagnosticHandler::DiagnosticHandlerFn(
-    const llvm::DiagnosticInfo& info, void* context) {
-  if (info.getSeverity() == llvm::DiagnosticSeverity::DS_Error) {
+    const llvm::DiagnosticInfo* info, void* context) {
+  if (info->getSeverity() == llvm::DiagnosticSeverity::DS_Error) {
     LlvmCodeGen* codegen = reinterpret_cast<LlvmCodeGen*>(context);
     codegen->diagnostic_handler_.error_str_.clear();
     llvm::raw_string_ostream error_msg(codegen->diagnostic_handler_.error_str_);
     llvm::DiagnosticPrinterRawOStream diagnostic_printer(error_msg);
     diagnostic_printer << "LLVM diagnostic error: ";
-    info.print(diagnostic_printer);
+    info->print(diagnostic_printer);
     error_msg.flush();
     if (codegen->state_) {
       LOG(INFO) << "Query " << PrintId(codegen->state_->query_id()) << " encountered a "

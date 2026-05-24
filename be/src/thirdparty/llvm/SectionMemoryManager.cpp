@@ -1,9 +1,8 @@
 //===- SectionMemoryManager.cpp - Memory manager for MCJIT/RtDyld *- C++ -*-==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,18 +10,17 @@
 // execution engine and RuntimeDyld
 //
 //===----------------------------------------------------------------------===//
-// Impala: Copied from the LLVM project to customize private portions of the
-// implementation.
+// Impala: Copied from the LLVM project to apply
+// https://github.com/llvm/llvm-project/pull/71968.
 
 #include "SectionMemoryManager.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Process.h"
 
-#include "common/logging.h"
+using llvm::alignTo;
 
 namespace impala {
 
-// ---- Impala: llvm/llvm-project#71968 ----
 bool SectionMemoryManager::hasSpace(const MemoryGroup &MemGroup,
                                     uintptr_t Size) const {
   for (const FreeMemBlock &FreeMB : MemGroup.FreeMem) {
@@ -32,37 +30,29 @@ bool SectionMemoryManager::hasSpace(const MemoryGroup &MemGroup,
   return false;
 }
 
-static uintptr_t alignTo(uintptr_t Size, uint32_t Alignment) {
-  return (Size + Alignment - 1) & ~(uintptr_t)(Alignment - 1);
-}
+void SectionMemoryManager::reserveAllocationSpace(
+    uintptr_t CodeSize, Align CodeAlign, uintptr_t RODataSize,
+    Align RODataAlign, uintptr_t RWDataSize, Align RWDataAlign) {
+  if (CodeSize == 0 && RODataSize == 0 && RWDataSize == 0)
+    return;
 
-static uint32_t checkAlignment(uint32_t Alignment, unsigned PageSize) {
-  DCHECK_GT(Alignment, 0);
-  DCHECK(!(Alignment & (Alignment - 1))) << "Alignment must be a power of two.";
-  DCHECK_LT(Alignment, PageSize);
+  static const size_t PageSize = sys::Process::getPageSizeEstimate();
+
   // Code alignment needs to be at least the stub alignment - however, we
   // don't have an easy way to get that here so as a workaround, we assume
   // it's 8, which is the largest value I observed across all platforms.
-  constexpr uint32_t StubAlign = 8;
-  return std::max(Alignment, StubAlign);
-}
-
-void SectionMemoryManager::reserveAllocationSpace(
-    uintptr_t CodeSize, uint32_t CodeAlign, uintptr_t RODataSize, uint32_t RODataAlign,
-    uintptr_t RWDataSize, uint32_t RWDataAlign) {
-  if (CodeSize == 0 && RODataSize == 0 && RWDataSize == 0) return;
-
-  static const unsigned PageSize = sys::Process::getPageSizeEstimate();
-
-  CodeAlign = checkAlignment(CodeAlign, PageSize);
-  RODataAlign = checkAlignment(RODataAlign, PageSize);
-  RWDataAlign = checkAlignment(RWDataAlign, PageSize);
+  constexpr uint64_t StubAlign = 8;
+  CodeAlign = Align(std::max(CodeAlign.value(), StubAlign));
+  RODataAlign = Align(std::max(RODataAlign.value(), StubAlign));
+  RWDataAlign = Align(std::max(RWDataAlign.value(), StubAlign));
 
   // Get space required for each section. Use the same calculation as
   // allocateSection because we need to be able to satisfy it.
-  uintptr_t RequiredCodeSize = alignTo(CodeSize, CodeAlign) + CodeAlign;
-  uintptr_t RequiredRODataSize = alignTo(RODataSize, RODataAlign) + RODataAlign;
-  uintptr_t RequiredRWDataSize = alignTo(RWDataSize, RWDataAlign) + RWDataAlign;
+  uint64_t RequiredCodeSize = alignTo(CodeSize, CodeAlign) + CodeAlign.value();
+  uint64_t RequiredRODataSize =
+      alignTo(RODataSize, RODataAlign) + RODataAlign.value();
+  uint64_t RequiredRWDataSize =
+      alignTo(RWDataSize, RWDataAlign) + RWDataAlign.value();
 
   if (hasSpace(CodeMem, RequiredCodeSize) &&
       hasSpace(RODataMem, RequiredRODataSize) &&
@@ -85,16 +75,16 @@ void SectionMemoryManager::reserveAllocationSpace(
   RequiredCodeSize = alignTo(RequiredCodeSize, PageSize);
   RequiredRODataSize = alignTo(RequiredRODataSize, PageSize);
   RequiredRWDataSize = alignTo(RequiredRWDataSize, PageSize);
-  uintptr_t RequiredSize = RequiredCodeSize + RequiredRODataSize + RequiredRWDataSize;
+  uint64_t RequiredSize =
+      RequiredCodeSize + RequiredRODataSize + RequiredRWDataSize;
 
   std::error_code ec;
-  sys::MemoryBlock MB = sys::Memory::allocateMappedMemory(RequiredSize, nullptr,
+  sys::MemoryBlock MB = MMapper->allocateMappedMemory(
+      AllocationPurpose::RWData, RequiredSize, nullptr,
       sys::Memory::MF_READ | sys::Memory::MF_WRITE, ec);
   if (ec) {
     return;
   }
-  // Request is page-aligned, so we should always get back exactly the request.
-  DCHECK_EQ(MB.allocatedSize(), RequiredSize);
   // CodeMem will arbitrarily own this MemoryBlock to handle cleanup.
   CodeMem.AllocatedMem.push_back(MB);
   uintptr_t Addr = (uintptr_t)MB.base();
@@ -102,26 +92,25 @@ void SectionMemoryManager::reserveAllocationSpace(
   FreeMB.PendingPrefixIndex = (unsigned)-1;
 
   if (CodeSize > 0) {
-    DCHECK_EQ(Addr, alignTo(Addr, CodeAlign));
-    FreeMB.Free = sys::MemoryBlock((void*)Addr, RequiredCodeSize);
+    assert(isAddrAligned(CodeAlign, (void *)Addr));
+    FreeMB.Free = sys::MemoryBlock((void *)Addr, RequiredCodeSize);
     CodeMem.FreeMem.push_back(FreeMB);
     Addr += RequiredCodeSize;
   }
 
   if (RODataSize > 0) {
-    DCHECK_EQ(Addr, alignTo(Addr, RODataAlign));
-    FreeMB.Free = sys::MemoryBlock((void*)Addr, RequiredRODataSize);
+    assert(isAddrAligned(RODataAlign, (void *)Addr));
+    FreeMB.Free = sys::MemoryBlock((void *)Addr, RequiredRODataSize);
     RODataMem.FreeMem.push_back(FreeMB);
     Addr += RequiredRODataSize;
   }
 
   if (RWDataSize > 0) {
-    DCHECK_EQ(Addr, alignTo(Addr, RWDataAlign));
-    FreeMB.Free = sys::MemoryBlock((void*)Addr, RequiredRWDataSize);
+    assert(isAddrAligned(RWDataAlign, (void *)Addr));
+    FreeMB.Free = sys::MemoryBlock((void *)Addr, RequiredRWDataSize);
     RWDataMem.FreeMem.push_back(FreeMB);
   }
 }
-// ---- End Impala changes ----
 
 uint8_t *SectionMemoryManager::allocateDataSection(uintptr_t Size,
                                                    unsigned Alignment,
@@ -129,27 +118,42 @@ uint8_t *SectionMemoryManager::allocateDataSection(uintptr_t Size,
                                                    StringRef SectionName,
                                                    bool IsReadOnly) {
   if (IsReadOnly)
-    return allocateSection(RODataMem, Size, Alignment);
-  return allocateSection(RWDataMem, Size, Alignment);
+    return allocateSection(SectionMemoryManager::AllocationPurpose::ROData,
+                           Size, Alignment);
+  return allocateSection(SectionMemoryManager::AllocationPurpose::RWData, Size,
+                         Alignment);
 }
 
 uint8_t *SectionMemoryManager::allocateCodeSection(uintptr_t Size,
                                                    unsigned Alignment,
                                                    unsigned SectionID,
                                                    StringRef SectionName) {
-  return allocateSection(CodeMem, Size, Alignment);
+  return allocateSection(SectionMemoryManager::AllocationPurpose::Code, Size,
+                         Alignment);
 }
 
-uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
-                                               uintptr_t Size,
-                                               unsigned Alignment) {
+uint8_t *SectionMemoryManager::allocateSection(
+    SectionMemoryManager::AllocationPurpose Purpose, uintptr_t Size,
+    unsigned Alignment) {
   if (!Alignment)
     Alignment = 16;
 
   assert(!(Alignment & (Alignment - 1)) && "Alignment must be a power of two.");
 
-  uintptr_t RequiredSize = Alignment * ((Size + Alignment - 1)/Alignment + 1);
+  uintptr_t RequiredSize = Alignment * ((Size + Alignment - 1) / Alignment + 1);
   uintptr_t Addr = 0;
+
+  MemoryGroup &MemGroup = [&]() -> MemoryGroup & {
+    switch (Purpose) {
+    case AllocationPurpose::Code:
+      return CodeMem;
+    case AllocationPurpose::ROData:
+      return RODataMem;
+    case AllocationPurpose::RWData:
+      return RWDataMem;
+    }
+    llvm_unreachable("Unknown SectionMemoryManager::AllocationPurpose");
+  }();
 
   // Look in the list of free memory regions and use a block there if one
   // is available.
@@ -168,13 +172,16 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
         // modify it rather than creating a new one
         FreeMB.PendingPrefixIndex = MemGroup.PendingMem.size() - 1;
       } else {
-        sys::MemoryBlock &PendingMB = MemGroup.PendingMem[FreeMB.PendingPrefixIndex];
-        PendingMB = sys::MemoryBlock(PendingMB.base(), Addr + Size - (uintptr_t)PendingMB.base());
+        sys::MemoryBlock &PendingMB =
+            MemGroup.PendingMem[FreeMB.PendingPrefixIndex];
+        PendingMB = sys::MemoryBlock(PendingMB.base(),
+                                     Addr + Size - (uintptr_t)PendingMB.base());
       }
 
       // Remember how much free space is now left in this block
-      FreeMB.Free = sys::MemoryBlock((void *)(Addr + Size), EndOfBlock - Addr - Size);
-      return (uint8_t*)Addr;
+      FreeMB.Free =
+          sys::MemoryBlock((void *)(Addr + Size), EndOfBlock - Addr - Size);
+      return (uint8_t *)Addr;
     }
   }
 
@@ -188,11 +195,9 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
   // FIXME: Initialize the Near member for each memory group to avoid
   // interleaving.
   std::error_code ec;
-  sys::MemoryBlock MB = sys::Memory::allocateMappedMemory(RequiredSize,
-                                                          &MemGroup.Near,
-                                                          sys::Memory::MF_READ |
-                                                            sys::Memory::MF_WRITE,
-                                                          ec);
+  sys::MemoryBlock MB = MMapper->allocateMappedMemory(
+      Purpose, RequiredSize, &MemGroup.Near,
+      sys::Memory::MF_READ | sys::Memory::MF_WRITE, ec);
   if (ec) {
     // FIXME: Add error propagation to the interface.
     return nullptr;
@@ -200,6 +205,15 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
 
   // Save this address as the basis for our next request
   MemGroup.Near = MB;
+
+  // Copy the address to all the other groups, if they have not
+  // been initialized.
+  if (CodeMem.Near.base() == nullptr)
+    CodeMem.Near = MB;
+  if (RODataMem.Near.base() == nullptr)
+    RODataMem.Near = MB;
+  if (RWDataMem.Near.base() == nullptr)
+    RWDataMem.Near = MB;
 
   // Remember that we allocated this memory
   MemGroup.AllocatedMem.push_back(MB);
@@ -214,20 +228,19 @@ uint8_t *SectionMemoryManager::allocateSection(MemoryGroup &MemGroup,
 
   // The allocateMappedMemory may allocate much more memory than we need. In
   // this case, we store the unused memory as a free memory block.
-  unsigned FreeSize = EndOfBlock-Addr-Size;
+  unsigned FreeSize = EndOfBlock - Addr - Size;
   if (FreeSize > 16) {
     FreeMemBlock FreeMB;
-    FreeMB.Free = sys::MemoryBlock((void*)(Addr + Size), FreeSize);
+    FreeMB.Free = sys::MemoryBlock((void *)(Addr + Size), FreeSize);
     FreeMB.PendingPrefixIndex = (unsigned)-1;
     MemGroup.FreeMem.push_back(FreeMB);
   }
 
   // Return aligned address
-  return (uint8_t*)Addr;
+  return (uint8_t *)Addr;
 }
 
-bool SectionMemoryManager::finalizeMemory(std::string *ErrMsg)
-{
+bool SectionMemoryManager::finalizeMemory(std::string *ErrMsg) {
   // FIXME: Should in-progress permissions be reverted if an error occurs?
   std::error_code ec;
 
@@ -270,21 +283,22 @@ static sys::MemoryBlock trimBlockToPageSize(sys::MemoryBlock M) {
   TrimmedSize -= StartOverlap;
   TrimmedSize -= TrimmedSize % PageSize;
 
-  sys::MemoryBlock Trimmed((void *)((uintptr_t)M.base() + StartOverlap), TrimmedSize);
+  sys::MemoryBlock Trimmed((void *)((uintptr_t)M.base() + StartOverlap),
+                           TrimmedSize);
 
   assert(((uintptr_t)Trimmed.base() % PageSize) == 0);
   assert((Trimmed.allocatedSize() % PageSize) == 0);
-  assert(M.base() <= Trimmed.base() && Trimmed.allocatedSize() <= M.allocatedSize());
+  assert(M.base() <= Trimmed.base() &&
+         Trimmed.allocatedSize() <= M.allocatedSize());
 
   return Trimmed;
 }
-
 
 std::error_code
 SectionMemoryManager::applyMemoryGroupPermissions(MemoryGroup &MemGroup,
                                                   unsigned Permissions) {
   for (sys::MemoryBlock &MB : MemGroup.PendingMem)
-    if (std::error_code EC = sys::Memory::protectMappedMemory(MB, Permissions))
+    if (std::error_code EC = MMapper->protectMappedMemory(MB, Permissions))
       return EC;
 
   MemGroup.PendingMem.clear();
@@ -298,24 +312,61 @@ SectionMemoryManager::applyMemoryGroupPermissions(MemoryGroup &MemGroup,
   }
 
   // Remove all blocks which are now empty
-  MemGroup.FreeMem.erase(
-      remove_if(MemGroup.FreeMem,
-                [](FreeMemBlock &FreeMB) { return FreeMB.Free.allocatedSize() == 0; }),
-      MemGroup.FreeMem.end());
+  erase_if(MemGroup.FreeMem, [](FreeMemBlock &FreeMB) {
+    return FreeMB.Free.allocatedSize() == 0;
+  });
 
   return std::error_code();
 }
 
 void SectionMemoryManager::invalidateInstructionCache() {
   for (sys::MemoryBlock &Block : CodeMem.PendingMem)
-    sys::Memory::InvalidateInstructionCache(Block.base(), Block.allocatedSize());
+    sys::Memory::InvalidateInstructionCache(Block.base(),
+                                            Block.allocatedSize());
 }
 
 SectionMemoryManager::~SectionMemoryManager() {
   for (MemoryGroup *Group : {&CodeMem, &RWDataMem, &RODataMem}) {
     for (sys::MemoryBlock &Block : Group->AllocatedMem)
-      sys::Memory::releaseMappedMemory(Block);
+      MMapper->releaseMappedMemory(Block);
   }
 }
 
-} // namespace impala
+SectionMemoryManager::MemoryMapper::~MemoryMapper() = default;
+
+void SectionMemoryManager::anchor() {}
+
+namespace {
+// Trivial implementation of SectionMemoryManager::MemoryMapper that just calls
+// into sys::Memory.
+class DefaultMMapper final : public SectionMemoryManager::MemoryMapper {
+public:
+  sys::MemoryBlock
+  allocateMappedMemory(SectionMemoryManager::AllocationPurpose Purpose,
+                       size_t NumBytes, const sys::MemoryBlock *const NearBlock,
+                       unsigned Flags, std::error_code &EC) override {
+    return sys::Memory::allocateMappedMemory(NumBytes, NearBlock, Flags, EC);
+  }
+
+  std::error_code protectMappedMemory(const sys::MemoryBlock &Block,
+                                      unsigned Flags) override {
+    return sys::Memory::protectMappedMemory(Block, Flags);
+  }
+
+  std::error_code releaseMappedMemory(sys::MemoryBlock &M) override {
+    return sys::Memory::releaseMappedMemory(M);
+  }
+};
+} // namespace
+
+SectionMemoryManager::SectionMemoryManager(MemoryMapper *UnownedMM,
+                                           bool ReserveAlloc)
+    : MMapper(UnownedMM), OwnedMMapper(nullptr),
+      ReserveAllocation(ReserveAlloc) {
+  if (!MMapper) {
+    OwnedMMapper = std::make_unique<DefaultMMapper>();
+    MMapper = OwnedMMapper.get();
+  }
+}
+
+} // namespace llvm
