@@ -614,8 +614,8 @@ class LlvmCodeGen {
   /// Codegens IR to load array[idx] and returns the loaded value. 'array' should be a
   /// C-style array (e.g. i32*) or an IR array (e.g. [10 x i32]). This function does not
   /// do bounds checking.
-  llvm::Value* CodegenArrayAt(
-      LlvmBuilder*, llvm::Value* array, int idx, const char* name = "");
+  llvm::Value* CodegenArrayAt(LlvmBuilder*, llvm::Value* array, llvm::Type* elementType,
+      int idx, const char* name = "");
 
   /// Codegens IR to call the function corresponding to 'ir_type' with argument 'args'
   /// and returns the value.

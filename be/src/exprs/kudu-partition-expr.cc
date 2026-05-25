@@ -142,9 +142,9 @@ void CodegenGetKuduPartialRowAndPartitioner(LlvmCodeGen* codegen, LlvmBuilder* b
       {eval, codegen->GetI32Constant(fn_ctx_idx),
       kudu_row_ptr_ptr, kudu_partitioner_ptr_ptr});
 
-  *kudu_row_ptr = builder->CreateLoad(kudu_row_ptr_ptr, "kudu_row_ptr");
+  *kudu_row_ptr = builder->CreateLoad(kudu_row_ptr_type, kudu_row_ptr_ptr, "kudu_row_ptr");
   *kudu_partitioner_ptr = builder->CreateLoad(
-      kudu_partitioner_ptr_ptr, "kudu_partitioner_ptr");
+      kudu_partitioner_ptr_type, kudu_partitioner_ptr_ptr, "kudu_partitioner_ptr");
 }
 
 void CodegenCallWriteKuduValue(LlvmCodeGen* codegen, LlvmBuilder* builder, int col,

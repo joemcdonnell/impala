@@ -291,10 +291,11 @@ void CodegenReadingStringOrCollectionVal(LlvmCodeGen* codegen, LlvmBuilder* buil
     *len = builder->CreateCall(str_len_fn,
         llvm::ArrayRef<llvm::Value*>({val_ptr}), "len");
   } else if (type.IsCollectionType()) {
-    llvm::Value* ptr_ptr = builder->CreateStructGEP(nullptr, val_ptr, 0, "ptr_ptr");
-    *ptr = builder->CreateLoad(ptr_ptr, "ptr");
-    llvm::Value* len_ptr = builder->CreateStructGEP(nullptr, val_ptr, 1, "len_ptr");
-    *len = builder->CreateLoad(len_ptr, "len");
+    llvm::Type* slot_type = codegen->GetSlotType(type);
+    llvm::Value* ptr_ptr = builder->CreateStructGEP(slot_type, val_ptr, 0, "ptr_ptr");
+    *ptr = builder->CreateLoad(codegen->ptr_type(), ptr_ptr, "ptr");
+    llvm::Value* len_ptr = builder->CreateStructGEP(slot_type, val_ptr, 1, "len_ptr");
+    *len = builder->CreateLoad(codegen->i32_type(), len_ptr, "len");
   } else {
     DCHECK(type.type == TYPE_CHAR || type.type == TYPE_UUID
         || type.type == TYPE_FIXED_UDA_INTERMEDIATE);
@@ -304,19 +305,21 @@ void CodegenReadingStringOrCollectionVal(LlvmCodeGen* codegen, LlvmBuilder* buil
   }
 }
 
-void CodegenReadingTimestamp(LlvmCodeGen* codegen, LlvmBuilder* builder,
+static void CodegenReadingTimestamp(LlvmCodeGen* codegen, LlvmBuilder* builder,
     llvm::Value* val_ptr, llvm::Value** time_of_day, llvm::Value** date) {
+  llvm::Type* slot_type = codegen->GetSlotType(ColumnType(TYPE_TIMESTAMP));
   llvm::Value* time_of_day_ptr =
-    builder->CreateStructGEP(nullptr, val_ptr, 0, "time_of_day_ptr");
+    builder->CreateStructGEP(slot_type, val_ptr, 0, "time_of_day_ptr");
   // Cast boost::posix_time::time_duration to i64
   llvm::Value* time_of_day_cast =
-    builder->CreateBitCast(time_of_day_ptr, codegen->i64_ptr_type());
-  *time_of_day = builder->CreateLoad(time_of_day_cast, "time_of_day");
-  llvm::Value* date_ptr = builder->CreateStructGEP(nullptr, val_ptr, 1, "date_ptr");
+      builder->CreateBitCast(time_of_day_ptr, codegen->i64_ptr_type());
+  *time_of_day = builder->CreateLoad(
+      codegen->i64_type(), time_of_day_cast, "time_of_day");
+  llvm::Value* date_ptr = builder->CreateStructGEP(slot_type, val_ptr, 1, "date_ptr");
   // Cast boost::gregorian::date to i32
   llvm::Value* date_cast =
-    builder->CreateBitCast(date_ptr, codegen->i32_ptr_type());
-  *date = builder->CreateLoad(date_cast, "date");
+      builder->CreateBitCast(date_ptr, codegen->i32_ptr_type());
+  *date = builder->CreateLoad(codegen->i32_type(), date_cast, "date");
 }
 
 CodegenAnyValReadWriteInfo SlotRef::CodegenReadSlot(LlvmCodeGen* codegen,
@@ -325,7 +328,8 @@ CodegenAnyValReadWriteInfo SlotRef::CodegenReadSlot(LlvmCodeGen* codegen,
     llvm::BasicBlock* null_block, llvm::BasicBlock* read_slot_block,
     llvm::Value* tuple_ptr, llvm::Value* slot_offset) {
   builder->SetInsertPoint(read_slot_block);
-  llvm::Value* slot_ptr = builder->CreateInBoundsGEP(tuple_ptr, slot_offset, "slot_addr");
+  llvm::Value* slot_ptr = builder->CreateInBoundsGEP(
+      codegen->i8_type(), tuple_ptr, slot_offset, "slot_addr");
 
   // This is not used for structs because the child expressions have their own slot
   // pointers and we only read through those, not through the struct slot pointer.
@@ -384,7 +388,7 @@ CodegenAnyValReadWriteInfo SlotRef::CodegenReadSlot(LlvmCodeGen* codegen,
     DCHECK(date != nullptr);
     res.SetTimeAndDate(time_of_day, date);
   } else {
-    res.SetSimpleVal(builder->CreateLoad(val_ptr, "val"));
+    res.SetSimpleVal(builder->CreateLoad(codegen->GetSlotType(type_), val_ptr, "val"));
   }
 
   res.SetFnCtxIdx(fn_ctx_idx_);
@@ -460,10 +464,11 @@ CodegenAnyValReadWriteInfo SlotRef::CreateCodegenAnyValReadWriteInfo(
   // Get the tuple offset addr from the row
   llvm::Value* cast_row_ptr = builder->CreateBitCast(
       row_ptr, codegen->ptr_ptr_type(), "cast_row_ptr");
-  llvm::Value* tuple_ptr_addr =
-      builder->CreateInBoundsGEP(cast_row_ptr, tuple_offset, "tuple_ptr_addr");
+  llvm::Value* tuple_ptr_addr = builder->CreateInBoundsGEP(codegen->ptr_type(),
+      cast_row_ptr, tuple_offset, "tuple_ptr_addr");
   // Load the tuple*
-  llvm::Value* tuple_ptr = builder->CreateLoad(tuple_ptr_addr, "tuple_ptr");
+  llvm::Value* tuple_ptr =
+      builder->CreateLoad(codegen->ptr_type(), tuple_ptr_addr, "tuple_ptr");
 
   //### Part 2: null checking
   CodegenNullChecking(codegen, builder, fn, null_block, read_slot_block, tuple_ptr);

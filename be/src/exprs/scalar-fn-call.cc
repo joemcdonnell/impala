@@ -307,22 +307,27 @@ Status ScalarFnCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
 
   // First argument is always FunctionContext*.
   // Index into our registered offset in the ScalarFnEvaluator.
-  llvm::Value* eval_gep = builder.CreateStructGEP(NULL, eval, 1, "eval_gep");
-  llvm::Value* fn_ctxs_base = builder.CreateLoad(eval_gep, "fn_ctxs_base");
+  llvm::StructType* eval_struct = codegen->GetStructType<ScalarExprEvaluator>();
+  llvm::Value* eval_gep = builder.CreateStructGEP(eval_struct, eval, 1, "eval_gep");
+  llvm::Type* eval_gep_type = eval_struct->getElementType(1);
+  llvm::Value* fn_ctxs_base =
+      builder.CreateLoad(eval_gep_type, eval_gep, "fn_ctxs_base");
   // Use GEP to add our index to the base pointer
+  llvm::Type* fn_ctx_type =
+      codegen->GetNamedPtrType("class.impala_udf::FunctionContext");
   llvm::Value* fn_ctx_ptr =
-      builder.CreateConstGEP1_32(fn_ctxs_base, fn_ctx_idx_, "fn_ctx_ptr");
-  llvm::Value* fn_ctx = builder.CreateLoad(fn_ctx_ptr, "fn_ctx");
+      builder.CreateConstGEP1_32(fn_ctx_type, fn_ctxs_base, fn_ctx_idx_, "fn_ctx_ptr");
+  llvm::Value* fn_ctx = builder.CreateLoad(fn_ctx_type, fn_ctx_ptr, "fn_ctx");
   udf_args.push_back(fn_ctx);
 
   // Allocate a varargs array. The array's entry type is the appropriate AnyVal subclass.
   // E.g. if the vararg type is STRING, and the function is called with 10 arguments, we
   // allocate a StringVal[10] array. We allocate the buffer with Alloca so that LLVM can
   // optimise out the buffer once the function call is inlined.
-  llvm::Value* varargs_buffer = NULL;
+  llvm::Type* unlowered_varargs_type = nullptr;
+  llvm::Value* varargs_buffer = nullptr;
   if (vararg_start_idx_ != -1) {
-    llvm::Type* unlowered_varargs_type =
-        CodegenAnyVal::GetUnloweredType(codegen, VarArgsType());
+    unlowered_varargs_type = CodegenAnyVal::GetUnloweredType(codegen, VarArgsType());
     varargs_buffer = codegen->CreateEntryBlockAlloca(builder, unlowered_varargs_type,
         NumVarArgs(), FunctionContextImpl::VARARGS_BUFFER_ALIGNMENT, "varargs_buffer");
   }
@@ -358,7 +363,8 @@ Status ScalarFnCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
     } else {
       // Store the result of 'child_fn' in varargs_buffer[i].
       arg_val_ptr =
-          builder.CreateConstGEP1_32(varargs_buffer, i - NumFixedArgs(), "arg_val_ptr");
+          builder.CreateConstGEP1_32(unlowered_varargs_type, varargs_buffer,
+              i - NumFixedArgs(), "arg_val_ptr");
     }
 #ifndef __aarch64__
     DCHECK_EQ(arg_val_ptr->getType(), arg_type->getPointerTo());
@@ -390,10 +396,11 @@ Status ScalarFnCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
             "arg_val_ptr");
         udf_args.push_back(arg_val_ptr);
       } else {
+        llvm::Type* unlowered_type =
+            CodegenAnyVal::GetUnloweredType(codegen, children_[i]->type());
         llvm::Value* tmp_ptr = builder.CreateTruncOrBitCast(lowered_arg_val_ptr,
-            CodegenAnyVal::GetUnloweredPtrType(codegen, children_[i]->type()),
-            "tmp_ptr");
-        builder.CreateStore(builder.CreateLoad(tmp_ptr), arg_val_ptr);
+            codegen->GetPtrType(unlowered_type), "tmp_ptr");
+        builder.CreateStore(builder.CreateLoad(unlowered_type, tmp_ptr), arg_val_ptr);
       }
     }
 #endif

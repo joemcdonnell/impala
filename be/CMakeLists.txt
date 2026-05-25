@@ -147,6 +147,7 @@ SET(CXX_CLANG_FLAGS "${CXX_CLANG_FLAGS} -Wno-inconsistent-missing-destructor-ove
 SET(CXX_CLANG_FLAGS "${CXX_CLANG_FLAGS} -Wno-return-type-c-linkage")
 SET(CXX_CLANG_FLAGS "${CXX_CLANG_FLAGS} -DCALLONCEHACK")
 SET(CXX_CLANG_FLAGS "${CXX_CLANG_FLAGS} -Wno-implicit-const-int-float-conversion")
+SET(CXX_CLANG_FLAGS "${CXX_CLANG_FLAGS} -Wno-unqualified-std-cast-call")
 # For any gcc builds:
 #   -g: Enable symbols for profiler tools
 #   -Wno-unused-local-typedefs: Do not warn for local typedefs that are unused.
@@ -352,7 +353,7 @@ add_definitions(-DKUDU_HEADERS_USE_RICH_SLICE -DKUDU_HEADERS_NO_STUBS)
 set(CLANG_IR_CXX_FLAGS "-emit-llvm" "-c" "-std=c++17" "-DIR_COMPILE" "-DHAVE_INTTYPES_H"
   "-DHAVE_NETINET_IN_H" "-DBOOST_DATE_TIME_POSIX_TIME_STD_CONFIG" "-DBOOST_NO_EXCEPTIONS"
   "-DBOOST_BIND_GLOBAL_PLACEHOLDERS" "-DBOOST_ALLOW_DEPRECATED_HEADERS"
-  "-DKUDU_HEADERS_NO_STUBS" "-fcolor-diagnostics"
+  "-DKUDU_HEADERS_NO_STUBS" "-fcolor-diagnostics" "-Xclang" "-no-opaque-pointers"
   "-Wno-return-type-c-linkage" "-fsigned-char" "-Wno-implicit-const-int-float-conversion")
 #  -Wno-deprecated-declarations: OpenSSL3 deprecated various APIs currently used by
 #      Impala, so this disables those warnings when using OpenSSL3 until they can be

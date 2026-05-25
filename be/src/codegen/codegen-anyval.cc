@@ -179,8 +179,9 @@ llvm::Value* CodegenAnyVal::CreateCall(LlvmCodeGen* cg, LlvmBuilder* builder,
     // argument (which should be a DecimalVal*).
     llvm::Function::arg_iterator ret_arg = fn->arg_begin();
     DCHECK(ret_arg->getType()->isPointerTy());
-    llvm::Type* ret_type = ret_arg->getType()->getPointerElementType();
-    DCHECK_EQ(ret_type, cg->GetNamedType(LLVM_DECIMALVAL_NAME));
+    llvm::Type* ret_type = cg->GetNamedType(LLVM_DECIMALVAL_NAME);
+    DCHECK(llvm::cast<llvm::PointerType>(
+        ret_arg->getType())->isOpaqueOrPointeeTypeMatches(ret_type));
 
     // We need to pass a DecimalVal pointer to 'fn' that will be populated with the result
     // value. Use 'result_ptr' if specified, otherwise alloca one.
@@ -196,7 +197,7 @@ llvm::Value* CodegenAnyVal::CreateCall(LlvmCodeGen* cg, LlvmBuilder* builder,
 
     // If 'result_ptr' was specified, we're done. Otherwise load and return the result.
     if (result_ptr != NULL) return NULL;
-    return builder->CreateLoad(ret_ptr, name);
+    return builder->CreateLoad(ret_type, ret_ptr, name);
   } else {
     // Function returns *Val normally (note that it could still be returning a
     // DecimalVal, since we generate non-compliant functions).
@@ -224,7 +225,7 @@ CodegenAnyVal::CodegenAnyVal(LlvmCodeGen* codegen, LlvmBuilder* builder,
   if (value_ == NULL) {
     // No Value* was specified, so allocate one on the stack and load it.
     llvm::Value* ptr = codegen_->CreateEntryBlockAlloca(*builder, value_type);
-    value_ = builder_->CreateLoad(ptr, name_);
+    value_ = builder_->CreateLoad(value_type, ptr, name_);
   }
   DCHECK_EQ(value_->getType(), value_type);
 }
@@ -677,7 +678,7 @@ llvm::Value* CodegenAnyVal::EqToNativePtr(llvm::Value* native_ptr,
     bool inclusive_equality) {
   llvm::Value* val = NULL;
   if (!type_.IsStringType()) {
-     val = builder_->CreateLoad(native_ptr);
+    val = builder_->CreateLoad(codegen_->GetSlotType(type_), native_ptr);
   }
   switch (type_.type) {
     case TYPE_NULL:
@@ -908,7 +909,7 @@ llvm::BasicBlock* CodegenAnyVal::CreateStructValFromReadWriteInfo(
 
     // The address where the child pointer should be written. This is in the pointer list
     // of the StructVal.
-    llvm::Value* dst_child_ptr_addr = builder->CreateInBoundsGEP(
+    llvm::Value* dst_child_ptr_addr = builder->CreateInBoundsGEP(codegen->ptr_type(),
         cast_children_ptrs_buffer, codegen->GetI32Constant(i), "child_ptr_addr");
     builder->CreateStore(stored_child_ptr, dst_child_ptr_addr);
 
@@ -1093,13 +1094,13 @@ void CodegenAnyVal::StructChildToReadWriteInfo(
     case TYPE_ARRAY:
     case TYPE_MAP: { // Arrays and maps have the same memory layout.
       llvm::Value* ptr_addr = builder->CreateStructGEP(
-          nullptr, cast_child_ptr, 0, "ptr_addr");
-      llvm::Value* ptr = builder->CreateLoad(ptr_addr, "ptr");
+          child_type, cast_child_ptr, 0, "ptr_addr");
+      llvm::Value* ptr = builder->CreateLoad(codegen->i8_ptr_type(), ptr_addr, "ptr");
 
       llvm::Value* len;
       llvm::Value* len_addr = builder->CreateStructGEP(
-          nullptr, cast_child_ptr, 1, "len_addr");
-      len = builder->CreateLoad(len_addr, "len");
+          child_type, cast_child_ptr, 1, "len_addr");
+      len = builder->CreateLoad(codegen->i32_type(), len_addr, "len");
       read_write_info->SetPtrAndLen(ptr, len);
       break;
     }
@@ -1109,17 +1110,18 @@ void CodegenAnyVal::StructChildToReadWriteInfo(
       break;
     case TYPE_TIMESTAMP: {
       llvm::Value* time_of_day_addr = builder->CreateStructGEP(
-          nullptr, cast_child_ptr, 0, "time_of_day_addr");
+          child_type, cast_child_ptr, 0, "time_of_day_addr");
       llvm::Value* time_of_day_addr_lowered = builder->CreateBitCast(
           time_of_day_addr, codegen->i64_ptr_type(), "time_of_day_addr");
       llvm::Value* time_of_day = builder->CreateLoad(
-          time_of_day_addr_lowered, "time_of_day");
+          codegen->i64_type(), time_of_day_addr_lowered, "time_of_day");
 
       llvm::Value* date_addr = builder->CreateStructGEP(
-          nullptr, cast_child_ptr, 1, "date_addr");
+          child_type, cast_child_ptr, 1, "date_addr");
       llvm::Value* date_addr_lowered = builder->CreateBitCast(
           date_addr, codegen->i32_ptr_type(), "date_addr_lowered");
-      llvm::Value* date = builder->CreateLoad(date_addr_lowered, "date");
+      llvm::Value* date =
+          builder->CreateLoad(codegen->i32_type(), date_addr_lowered, "date");
       read_write_info->SetTimeAndDate(time_of_day, date);
       break;
     }
@@ -1164,8 +1166,8 @@ void CodegenAnyVal::StructToReadWriteInfo(
     llvm::BasicBlock* child_entry_block = llvm::BasicBlock::Create(context, "entry", fn);
 
     builder->SetInsertPoint(child_entry_block);
-    llvm::Value* child_ptr_addr = builder->CreateInBoundsGEP(cast_children_ptr,
-        codegen->GetI32Constant(i), "child_ptr_addr");
+    llvm::Value* child_ptr_addr = builder->CreateInBoundsGEP(codegen->ptr_type(),
+        cast_children_ptr, codegen->GetI32Constant(i), "child_ptr_addr");
     llvm::Value* child_ptr = builder->CreateLoad(codegen->ptr_type(), child_ptr_addr,
         "child_ptr");
 
@@ -1182,7 +1184,8 @@ void CodegenAnyVal::StructToReadWriteInfo(
     if (child_type.IsStructType()) {
       llvm::Value* child_struct_ptr = builder->CreateBitCast(
           child_ptr, GetLoweredPtrType(codegen, child_type), "child_struct_ptr");
-      llvm::Value* child_struct = builder->CreateLoad(child_struct_ptr, "child_struct");
+      llvm::Value* child_struct = builder->CreateLoad(
+          GetLoweredType(codegen, child_type), child_struct_ptr, "child_struct");
       CodegenAnyVal child_anyval = CodegenAnyVal(
           codegen, builder, child_type, child_struct);
       llvm::Value* child_children_ptr = child_anyval.GetPtr();

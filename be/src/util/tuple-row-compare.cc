@@ -284,13 +284,16 @@ Status TupleRowComparatorConfig::CodegenLexicalCompare(
     llvm::BasicBlock* next_key_block = llvm::BasicBlock::Create(context, "next_key", *fn);
 
     // Call key_fns[i](ordering_expr_evals_lhs[i], lhs_arg)
-    llvm::Value* lhs_eval = codegen->CodegenArrayAt(&builder, lhs_evals_arg, i);
+    llvm::Type* eval_type = codegen->GetStructPtrType<ScalarExprEvaluator>();
+    llvm::Value* lhs_eval =
+        codegen->CodegenArrayAt(&builder, lhs_evals_arg, eval_type, i);
     llvm::Value* lhs_args[] = {lhs_eval, lhs_arg};
     CodegenAnyVal lhs_value = CodegenAnyVal::CreateCallWrapped(codegen, &builder,
         ordering_exprs[i]->type(), key_fns[i], lhs_args, "lhs_value");
 
     // Call key_fns[i](ordering_expr_evals_rhs[i], rhs_arg)
-    llvm::Value* rhs_eval = codegen->CodegenArrayAt(&builder, rhs_evals_arg, i);
+    llvm::Value* rhs_eval =
+        codegen->CodegenArrayAt(&builder, rhs_evals_arg, eval_type, i);
     llvm::Value* rhs_args[] = {rhs_eval, rhs_arg};
     CodegenAnyVal rhs_value = CodegenAnyVal::CreateCallWrapped(codegen, &builder,
         ordering_exprs[i]->type(), key_fns[i], rhs_args, "rhs_value");

@@ -347,8 +347,8 @@ Status AggregatorConfig::CodegenUpdateSlot(LlvmCodeGen* codegen, int agg_fn_idx,
     DCHECK(input_expr_fn != nullptr);
 
     // Call input expr function with the matching evaluator to get src slot value.
-    llvm::Value* input_eval =
-        codegen->CodegenArrayAt(&builder, input_evals_vector, i, "input_eval");
+    llvm::Value* input_eval = codegen->CodegenArrayAt(&builder, input_evals_vector,
+        codegen->GetStructPtrType<ScalarExprEvaluator>(), i, "input_eval");
     string input_name = Substitute("input$0", i);
     CodegenAnyVal input_val = CodegenAnyVal::CreateCallWrapped(codegen, &builder,
         input_expr->type(), input_expr_fn,
@@ -372,11 +372,12 @@ Status AggregatorConfig::CodegenUpdateSlot(LlvmCodeGen* codegen, int agg_fn_idx,
 
   // 'dst_slot_ptr' points to the slot in the aggregate tuple to update.
   llvm::Value* dst_slot_ptr = builder.CreateStructGEP(
-      nullptr, agg_tuple_arg, slot_desc->llvm_field_idx(), "dst_slot_ptr");
+      tuple_struct, agg_tuple_arg, slot_desc->llvm_field_idx(), "dst_slot_ptr");
+  llvm::Type* dst_slot_type = tuple_struct->getElementType(slot_desc->llvm_field_idx());
   // TODO: consider moving the following codegen logic to AggFn.
   if (agg_op == AggFn::COUNT) {
     src.CodegenBranchIfNull(&builder, ret_block);
-    llvm::Value* dst_value = builder.CreateLoad(dst_slot_ptr, "dst_val");
+    llvm::Value* dst_value = builder.CreateLoad(dst_slot_type, dst_slot_ptr, "dst_val");
     llvm::Value* result = agg_fn->is_merge() ?
         builder.CreateAdd(dst_value, src.GetVal(), "count_sum") :
         builder.CreateAdd(dst_value, codegen->GetI64Constant(1), "count_inc");
@@ -394,7 +395,7 @@ Status AggregatorConfig::CodegenUpdateSlot(LlvmCodeGen* codegen, int agg_fn_idx,
         codegen, &builder, agg_tuple_arg, codegen->false_value());
   } else if (agg_op == AggFn::SUM && dst_is_int_or_float_or_bool) {
     src.CodegenBranchIfNull(&builder, ret_block);
-    llvm::Value* dst_value = builder.CreateLoad(dst_slot_ptr, "dst_val");
+    llvm::Value* dst_value = builder.CreateLoad(dst_slot_type, dst_slot_ptr, "dst_val");
     llvm::Value* result = dst_type.IsFloatingPointType() ?
         builder.CreateFAdd(dst_value, src.GetVal()) :
         builder.CreateAdd(dst_value, src.GetVal());
@@ -512,7 +513,8 @@ Status AggregatorConfig::CodegenCallUda(LlvmCodeGen* codegen, LlvmBuilder* build
   builder->CreateCall(uda_fn, uda_fn_args);
 
   // Convert intermediate 'dst_arg' back to the native type.
-  llvm::Value* anyval_result = builder->CreateLoad(dst_lowered_ptr, "anyval_result");
+  llvm::Value* anyval_result = builder->CreateLoad(
+      dst_val.GetLoweredValue()->getType(), dst_lowered_ptr, "anyval_result");
 
   *updated_dst_val = CodegenAnyVal(codegen, builder, dst_type, anyval_result);
   return Status::OK();
@@ -600,8 +602,9 @@ Status AggregatorConfig::CodegenUpdateTuple(LlvmCodeGen* codegen, llvm::Function
       int field_idx = slot_desc->llvm_field_idx();
       llvm::Value* const_one = codegen->GetI64Constant(1);
       llvm::Value* slot_ptr =
-          builder.CreateStructGEP(nullptr, tuple_arg, field_idx, "src_slot");
-      llvm::Value* slot_loaded = builder.CreateLoad(slot_ptr, "count_star_val");
+          builder.CreateStructGEP(tuple_struct, tuple_arg, field_idx, "src_slot");
+      llvm::Value* slot_loaded = builder.CreateLoad(
+          tuple_struct->getElementType(field_idx), slot_ptr, "count_star_val");
       llvm::Value* count_inc =
           builder.CreateAdd(slot_loaded, const_one, "count_star_inc");
       builder.CreateStore(count_inc, slot_ptr);
@@ -610,8 +613,8 @@ Status AggregatorConfig::CodegenUpdateTuple(LlvmCodeGen* codegen, llvm::Function
       RETURN_IF_ERROR(CodegenUpdateSlot(codegen, i, slot_desc, &update_slot_fn));
 
       // Load agg_fn_evals_[i]
-      llvm::Value* agg_fn_eval_val =
-          codegen->CodegenArrayAt(&builder, agg_fn_evals_arg, i, "agg_fn_eval");
+      llvm::Value* agg_fn_eval_val = codegen->CodegenArrayAt(&builder, agg_fn_evals_arg,
+          codegen->GetStructPtrType<AggFnEvaluator>(), i, "agg_fn_eval");
 
       // Call UpdateSlot(agg_fn_evals_[i], tuple, row);
       llvm::Value* update_slot_args[] = {agg_fn_eval_val, tuple_arg, row_arg};

@@ -474,7 +474,7 @@ Status Tuple::CodegenMaterializeExprs(LlvmCodeGen* codegen, bool collect_varlen_
   // llvm::Value* num_non_null_collection_values_arg = args[9]; // unused
 
   // Cast the opaque Tuple* argument to the generated struct type
-  llvm::Type* tuple_struct_type = desc.GetLlvmStruct(codegen);
+  llvm::StructType* tuple_struct_type = desc.GetLlvmStruct(codegen);
   DCHECK(tuple_struct_type != nullptr);
 
   llvm::PointerType* tuple_type = codegen->GetPtrType(tuple_struct_type);
@@ -490,8 +490,9 @@ Status Tuple::CodegenMaterializeExprs(LlvmCodeGen* codegen, bool collect_varlen_
         || slot_desc->type() == slot_materialize_exprs[i]->type());
 
     // Call materialize_expr_fns[i](slot_materialize_exprs[i], row)
-    llvm::Value* expr_eval =
-        codegen->CodegenArrayAt(&builder, expr_evals_arg, i, "expr_eval");
+    llvm::Type* expr_eval_type = codegen->GetStructPtrType<ScalarExprEvaluator>();
+    llvm::Value* expr_eval = codegen->CodegenArrayAt(&builder, expr_evals_arg,
+        expr_eval_type, i, "expr_eval");
     llvm::Value* expr_args[] = {expr_eval, row_arg};
     CodegenAnyVal src = CodegenAnyVal::CreateCallWrapped(codegen, &builder,
         slot_materialize_exprs[i]->type(), materialize_expr_fns[i], expr_args, "src");
@@ -499,7 +500,7 @@ Status Tuple::CodegenMaterializeExprs(LlvmCodeGen* codegen, bool collect_varlen_
     // Write expr result 'src' to slot
     CodegenAnyValReadWriteInfo read_write_info = src.ToReadWriteInfo();
     slot_desc->CodegenWriteToSlot(
-        read_write_info, tuple, use_mem_pool ? pool_arg : nullptr);
+        read_write_info, tuple, tuple_struct_type, use_mem_pool ? pool_arg : nullptr);
   }
   builder.CreateRetVoid();
   // TODO: if pool != NULL, OptimizeFunctionWithExprs() is inlining the Allocate()
@@ -552,8 +553,10 @@ Status Tuple::CodegenCopyStrings(
       slot_offsets_type, slot_offset_ir_constants, "slot_offsets");
   llvm::Constant* num_string_slots = codegen->GetI32Constant(desc.string_slots().size());
   // Get SlotOffsets* pointer to the first element of the constant array.
+  llvm::ArrayType* array_type =
+      llvm::ArrayType::get(slot_offsets_type, slot_offset_ir_constants.size());
   llvm::Value* constant_slot_offsets_first_element_ptr =
-      builder.CreateConstGEP2_64(constant_slot_offsets, 0, 0);
+      builder.CreateConstGEP2_64(array_type, constant_slot_offsets, 0, 0);
 
   llvm::Value* result_val = builder.CreateCall(cross_compiled_fn,
       {opaque_tuple_arg, err_ctx_arg, state_arg, constant_slot_offsets_first_element_ptr,

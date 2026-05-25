@@ -214,7 +214,7 @@ llvm::Function* CodegenInnerLoop(
 
   // Store &jitted_counter as a constant.
   llvm::Value* const_delta = codegen->GetI64Constant(delta);
-  llvm::Value* loaded_counter = builder.CreateLoad(counter);
+  llvm::Value* loaded_counter = builder.CreateLoad(codegen->i64_type(), counter);
   llvm::Value* incremented_value = builder.CreateAdd(loaded_counter, const_delta);
   builder.CreateStore(incremented_value, counter);
   builder.CreateRetVoid();
@@ -381,8 +381,8 @@ TEST_F(LlvmCodeGenTest, RemoveFnCall) {
 //   ret i32 %len
 // }
 llvm::Function* CodegenStringTest(LlvmCodeGen* codegen) {
-  llvm::PointerType* string_val_ptr_type =
-      codegen->GetSlotPtrType(ColumnType(TYPE_STRING));
+  llvm::Type* string_val_type = codegen->GetSlotType(ColumnType(TYPE_STRING));
+  llvm::PointerType* string_val_ptr_type = codegen->GetPtrType(string_val_type);
   EXPECT_TRUE(string_val_ptr_type != NULL);
 
   LlvmCodeGen::FnPrototype prototype(codegen, "StringTest", codegen->i32_type());
@@ -405,7 +405,7 @@ llvm::Function* CodegenStringTest(LlvmCodeGen* codegen) {
 
   llvm::Value* first_char_offset[] = {codegen->GetI32Constant(0)};
   llvm::Value* first_char_ptr =
-      builder.CreateGEP(str_ptr, first_char_offset, "first_char_ptr");
+      builder.CreateGEP(codegen->i8_type(), str_ptr, first_char_offset, "first_char_ptr");
   builder.CreateStore(codegen->GetI8Constant('A'), first_char_ptr);
 
   // Update and return old len

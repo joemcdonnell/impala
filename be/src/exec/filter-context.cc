@@ -192,7 +192,8 @@ Status FilterContext::CodegenEval(
   LlvmBuilder builder(context);
 
   *fn = nullptr;
-  llvm::PointerType* this_type = codegen->GetStructPtrType<FilterContext>();
+  llvm::StructType* filter_context_type = codegen->GetStructType<FilterContext>();
+  llvm::PointerType* this_type = codegen->GetPtrType(filter_context_type);
   llvm::PointerType* tuple_row_ptr_type = codegen->GetStructPtrType<TupleRow>();
   LlvmCodeGen::FnPrototype prototype(codegen, "FilterContextEval",
       codegen->bool_type());
@@ -215,8 +216,9 @@ Status FilterContext::CodegenEval(
 
   // Load 'expr_eval' from 'this_arg' FilterContext object.
   llvm::Value* expr_eval_ptr =
-      builder.CreateStructGEP(nullptr, this_arg, 0, "expr_eval_ptr");
-  llvm::Value* expr_eval_arg = builder.CreateLoad(expr_eval_ptr, "expr_eval_arg");
+      builder.CreateStructGEP(filter_context_type, this_arg, 0, "expr_eval_ptr");
+  llvm::Type* expr_eval_type = filter_context_type->getElementType(0);
+  llvm::Value* expr_eval_arg = builder.CreateLoad(expr_eval_type, expr_eval_ptr, "expr_eval_arg");
 
   // Evaluate the row against the filter's expression.
   llvm::Value* compute_fn_args[] = {expr_eval_arg, row_arg};
@@ -252,8 +254,9 @@ Status FilterContext::CodegenEval(
       col_type, filter_expr->type().ToIR(codegen), "expr_type_arg");
 
   // Load 'filter' from 'this_arg' FilterContext object.
-  llvm::Value* filter_ptr = builder.CreateStructGEP(nullptr, this_arg, 1, "filter_ptr");
-  llvm::Value* filter_arg = builder.CreateLoad(filter_ptr, "filter_arg");
+  llvm::Value* filter_ptr = builder.CreateStructGEP(filter_context_type, this_arg, 1, "filter_ptr");
+  llvm::Type* filter_type = filter_context_type->getElementType(1);
+  llvm::Value* filter_arg = builder.CreateLoad(filter_type, filter_ptr, "filter_arg");
 
   llvm::Value* run_filter_args[] = {filter_arg, val_ptr_phi, expr_type_arg};
   llvm::Value* passed_filter =
@@ -384,7 +387,8 @@ Status FilterContext::CodegenInsert(LlvmCodeGen* codegen, ScalarExpr* filter_exp
   LlvmBuilder builder(context);
 
   *fn = nullptr;
-  llvm::PointerType* this_type = codegen->GetStructPtrType<FilterContext>();
+  llvm::StructType* filter_context_type = codegen->GetStructType<FilterContext>();
+  llvm::PointerType* this_type = codegen->GetPtrType(filter_context_type);
   llvm::PointerType* tuple_row_ptr_type = codegen->GetStructPtrType<TupleRow>();
   LlvmCodeGen::FnPrototype prototype(
       codegen, "FilterContextInsert", codegen->void_type());
@@ -402,25 +406,26 @@ Status FilterContext::CodegenInsert(LlvmCodeGen* codegen, ScalarExpr* filter_exp
   if (filter_desc.type == TRuntimeFilterType::BLOOM) {
     // Load 'local_bloom_filter' from 'this_arg' FilterContext object.
     llvm::Value* local_bloom_filter_ptr =
-        builder.CreateStructGEP(nullptr, this_arg, 3, "local_bloom_filter_ptr");
-    local_filter_arg =
-        builder.CreateLoad(local_bloom_filter_ptr, "local_bloom_filter_arg");
+        builder.CreateStructGEP(filter_context_type, this_arg, 3, "local_bloom_filter_ptr");
+    llvm::Type* local_bloom_filter_type = filter_context_type->getElementType(3);
+    local_filter_arg = builder.CreateLoad(
+        local_bloom_filter_type, local_bloom_filter_ptr, "local_bloom_filter_arg");
   } else if (filter_desc.type == TRuntimeFilterType::MIN_MAX) {
     // Load 'local_min_max_filter' from 'this_arg' FilterContext object.
     llvm::Value* local_min_max_filter_ptr =
-        builder.CreateStructGEP(nullptr, this_arg, 4, "local_min_max_filter_ptr");
-    llvm::PointerType* min_max_filter_type =
-        codegen->GetNamedPtrType(MinMaxFilter::GetLlvmClassName(
-        filter_expr->type().type))->getPointerTo();
+        builder.CreateStructGEP(filter_context_type, this_arg, 4, "local_min_max_filter_ptr");
+    llvm::Type* filter_impl_type = codegen->GetNamedPtrType(
+        MinMaxFilter::GetLlvmClassName(filter_expr->type().type));
+    llvm::PointerType* min_max_filter_type = filter_impl_type->getPointerTo();
     local_min_max_filter_ptr = builder.CreatePointerCast(
         local_min_max_filter_ptr, min_max_filter_type, "cast_min_max_filter_ptr");
-    local_filter_arg =
-        builder.CreateLoad(local_min_max_filter_ptr, "local_min_max_filter_arg");
+    local_filter_arg = builder.CreateLoad(
+        filter_impl_type, local_min_max_filter_ptr, "local_min_max_filter_arg");
   } else {
     DCHECK(filter_desc.type == TRuntimeFilterType::IN_LIST);
     // Load 'local_in_list_filter' from 'this_arg' FilterContext object.
-    llvm::Value* local_in_list_filter_ptr =
-        builder.CreateStructGEP(nullptr, this_arg, 5, "local_in_list_filter_ptr");
+    llvm::Value* local_in_list_filter_ptr = builder.CreateStructGEP(filter_context_type,
+        this_arg, 5, "local_in_list_filter_ptr");
     switch (filter_expr->type().type) {
       case TYPE_TINYINT:
         insert_in_list_filter_fn = codegen->GetFunction(
@@ -466,8 +471,8 @@ Status FilterContext::CodegenInsert(LlvmCodeGen* codegen, ScalarExpr* filter_exp
     llvm::PointerType* in_list_filter_type = codegen->GetPtrType(filter_impl_type);
     local_in_list_filter_ptr = builder.CreatePointerCast(
         local_in_list_filter_ptr, in_list_filter_type, "cast_in_list_filter_ptr");
-    local_filter_arg =
-        builder.CreateLoad(local_in_list_filter_ptr, "local_in_list_filter_arg");
+    local_filter_arg = builder.CreateLoad(filter_impl_type, local_in_list_filter_ptr,
+        "local_in_list_filter_arg");
   }
 
   // Check if 'local_bloom_filter', 'local_min_max_filter' or 'local_in_list_filter' are
@@ -518,8 +523,10 @@ Status FilterContext::CodegenInsert(LlvmCodeGen* codegen, ScalarExpr* filter_exp
 
   // Load 'expr_eval' from 'this_arg' FilterContext object.
   llvm::Value* expr_eval_ptr =
-      builder.CreateStructGEP(nullptr, this_arg, 0, "expr_eval_ptr");
-  llvm::Value* expr_eval_arg = builder.CreateLoad(expr_eval_ptr, "expr_eval_arg");
+      builder.CreateStructGEP(filter_context_type, this_arg, 0, "expr_eval_ptr");
+  llvm::Type* expr_eval_type = filter_context_type->getElementType(0);
+  llvm::Value* expr_eval_arg =
+      builder.CreateLoad(expr_eval_type, expr_eval_ptr, "expr_eval_arg");
 
   // Evaluate the row against the filter's expression.
   llvm::Value* compute_fn_args[] = {expr_eval_arg, row_arg};
