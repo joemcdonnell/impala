@@ -1566,6 +1566,7 @@ Status PhjBuilderConfig::CodegenInsertRuntimeFilters(
 
   *fn = nullptr;
   llvm::Type* this_type = codegen->GetStructPtrType<PhjBuilder>();
+  llvm::StructType* filters_ctx_type = codegen->GetStructType<FilterContext>();
   llvm::PointerType* filters_ctx_arr_type = codegen->GetStructPtrType<FilterContext>();
   llvm::PointerType* tuple_row_ptr_type = codegen->GetStructPtrType<TupleRow>();
   LlvmCodeGen::FnPrototype prototype(
@@ -1584,7 +1585,8 @@ Status PhjBuilderConfig::CodegenInsertRuntimeFilters(
     llvm::Function* insert_fn;
     RETURN_IF_ERROR(FilterContext::CodegenInsert(
         codegen, filter_exprs[i], filter_descs_[i], &insert_fn));
-    llvm::Value* filter_context_ptr = builder.CreateConstGEP1_32(filter_ctxs, i);
+    llvm::Value* filter_context_ptr =
+        builder.CreateConstGEP1_32(filters_ctx_type, filter_ctxs, i);
     llvm::Value* insert_args[] = {filter_context_ptr, row_arg};
     builder.CreateCall(insert_fn, insert_args);
   }

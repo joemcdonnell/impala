@@ -744,15 +744,15 @@ void DescriptorTbl::GetTupleDescs(vector<TupleDescriptor*>* descs) const {
 
 void SlotDescriptor::CodegenLoadAnyVal(CodegenAnyVal* any_val, llvm::Value* raw_val_ptr) {
   DCHECK(raw_val_ptr->getType()->isPointerTy());
-  llvm::Type* raw_val_type = raw_val_ptr->getType()->getPointerElementType();
   LlvmCodeGen* const codegen = any_val->codegen();
   LlvmBuilder* const builder = any_val->builder();
   const ColumnType& type = any_val->type();
-  DCHECK_EQ(raw_val_type, codegen->GetSlotType(type))
+  llvm::Type* raw_val_type = codegen->GetSlotType(type);
+  DCHECK(llvm::cast<llvm::PointerType>(
+      raw_val_ptr->getType())->isOpaqueOrPointeeTypeMatches(raw_val_type))
       << endl
       << LlvmCodeGen::Print(raw_val_ptr) << endl
-      << type << " => " << LlvmCodeGen::Print(
-          codegen->GetSlotType(type));
+      << type << " => " << LlvmCodeGen::Print(raw_val_type);
   switch (type.type) {
     case TYPE_STRING:
     case TYPE_VARCHAR: {
@@ -785,7 +785,7 @@ void SlotDescriptor::CodegenLoadAnyVal(CodegenAnyVal* any_val, llvm::Value* raw_
       //   { boost::posix_time::time_duration, boost::gregorian::date }
       // = { {{{i64}}}, {{i32}} }
 
-      llvm::Value* ts_value = builder->CreateLoad(raw_val_ptr, "ts_value");
+      llvm::Value* ts_value = builder->CreateLoad(raw_val_type, raw_val_ptr, "ts_value");
       // Extract time_of_day i64 from boost::posix_time::time_duration.
       uint32_t time_of_day_idxs[] = {0, 0, 0, 0};
       llvm::Value* time_of_day =
@@ -808,7 +808,7 @@ void SlotDescriptor::CodegenLoadAnyVal(CodegenAnyVal* any_val, llvm::Value* raw_
     case TYPE_DOUBLE:
     case TYPE_DECIMAL:
     case TYPE_DATE:
-      any_val->SetVal(builder->CreateLoad(raw_val_ptr, "raw_val"));
+      any_val->SetVal(builder->CreateLoad(raw_val_type, raw_val_ptr, "raw_val"));
       break;
     default:
       DCHECK(false) << "NYI: " << type.DebugString();
@@ -929,8 +929,8 @@ void SlotDescriptor::CodegenSetNullIndicator(
 // end_write:                                        ; preds = %null, %non_null
 //   ; [insert point ends here]
 void SlotDescriptor::CodegenWriteToSlot(const CodegenAnyValReadWriteInfo& read_write_info,
-    llvm::Value* tuple_llvm_struct_ptr, llvm::Value* pool_val,
-    llvm::BasicBlock* insert_before) const {
+    llvm::Value* tuple_llvm_struct_ptr, llvm::StructType* tuple_llvm_struct_type,
+    llvm::Value* pool_val, llvm::BasicBlock* insert_before) const {
   DCHECK(tuple_llvm_struct_ptr->getType()->isPointerTy());
   DCHECK(tuple_llvm_struct_ptr->getType()->getPointerElementType()->isStructTy());
   LlvmBuilder* builder = read_write_info.builder();
@@ -944,8 +944,8 @@ void SlotDescriptor::CodegenWriteToSlot(const CodegenAnyValReadWriteInfo& read_w
 
   read_write_info.entry_block().BranchTo(builder);
 
-  CodegenWriteToSlotHelper(read_write_info, tuple_llvm_struct_ptr,
-      tuple_llvm_struct_ptr, pool_val, NonWritableBasicBlock(insert_before));
+  CodegenWriteToSlotHelper(read_write_info, tuple_llvm_struct_ptr, tuple_llvm_struct_ptr,
+      tuple_llvm_struct_type, pool_val, NonWritableBasicBlock(insert_before));
 
   // Leave builder_ after conditional blocks
   builder->SetInsertPoint(insert_before);
@@ -958,10 +958,10 @@ llvm::Value* SlotDescriptor::CodegenGetNullByte(
   llvm::Constant* byte_offset =
       codegen->GetI32Constant(null_indicator_offset.byte_offset);
   llvm::Value* tuple_bytes = builder->CreateBitCast(tuple, codegen->ptr_type());
-  llvm::Value* byte_ptr =
-      builder->CreateInBoundsGEP(tuple_bytes, byte_offset, "null_byte_ptr");
+  llvm::Value* byte_ptr = builder->CreateInBoundsGEP(codegen->i8_type(), tuple_bytes,
+      byte_offset, "null_byte_ptr");
   if (null_byte_ptr != nullptr) *null_byte_ptr = byte_ptr;
-  return builder->CreateLoad(byte_ptr, "null_byte");
+  return builder->CreateLoad(codegen->i8_type(), byte_ptr, "null_byte");
 }
 
 // TODO: Maybe separate null handling and non-null-handling so that it is easier to insert
@@ -970,21 +970,25 @@ llvm::Value* SlotDescriptor::CodegenGetNullByte(
 void SlotDescriptor::CodegenWriteToSlotHelper(
     const CodegenAnyValReadWriteInfo& read_write_info,
     llvm::Value* main_tuple_llvm_struct_ptr, llvm::Value* tuple_llvm_struct_ptr,
-    llvm::Value* pool_val,
+    llvm::StructType* tuple_llvm_struct_type, llvm::Value* pool_val,
     const NonWritableBasicBlock& insert_before) const {
   DCHECK(main_tuple_llvm_struct_ptr->getType()->isPointerTy());
-  DCHECK(main_tuple_llvm_struct_ptr->getType()->getPointerElementType()->isStructTy());
   DCHECK(tuple_llvm_struct_ptr->getType()->isPointerTy());
-  DCHECK(tuple_llvm_struct_ptr->getType()->getPointerElementType()->isStructTy());
   LlvmBuilder* builder = read_write_info.builder();
 
   // Non-null block: write slot
   builder->SetInsertPoint(read_write_info.non_null_block());
-  llvm::Value* slot = builder->CreateStructGEP(nullptr, tuple_llvm_struct_ptr,
-      llvm_field_idx(), "slot");
+  DCHECK(llvm::cast<llvm::PointerType>(tuple_llvm_struct_ptr->getType()->getScalarType()
+      )->isOpaqueOrPointeeTypeMatches(tuple_llvm_struct_type))
+      << LlvmCodeGen::Print(tuple_llvm_struct_ptr->getType()->getScalarType())
+      << " pointer to " << LlvmCodeGen::Print(tuple_llvm_struct_type);
+  llvm::Value* slot = builder->CreateStructGEP(tuple_llvm_struct_type,
+      tuple_llvm_struct_ptr, llvm_field_idx(), "slot");
   if (read_write_info.type().IsStructType()) {
+    llvm::Type* slot_type = tuple_llvm_struct_type->getElementType(llvm_field_idx());
+    DCHECK(slot_type->isStructTy());
     CodegenStoreStructToNativePtr(read_write_info, main_tuple_llvm_struct_ptr,
-        slot, pool_val, insert_before);
+        slot, llvm::cast<llvm::StructType>(slot_type), pool_val, insert_before);
   } else {
     CodegenStoreNonNullAnyVal(read_write_info, slot, pool_val, this, insert_before);
 
@@ -1001,8 +1005,8 @@ void SlotDescriptor::CodegenWriteToSlotHelper(
 
 void SlotDescriptor::CodegenStoreStructToNativePtr(
     const CodegenAnyValReadWriteInfo& read_write_info, llvm::Value* main_tuple_ptr,
-    llvm::Value* struct_slot_ptr, llvm::Value* pool_val,
-    const NonWritableBasicBlock& insert_before) const {
+    llvm::Value* struct_slot_ptr, llvm::StructType* struct_slot_type,
+    llvm::Value* pool_val, const NonWritableBasicBlock& insert_before) const {
   DCHECK(type_.IsStructType());
   DCHECK(children_tuple_descriptor_ != nullptr);
   DCHECK(read_write_info.type().IsStructType());
@@ -1025,7 +1029,7 @@ void SlotDescriptor::CodegenStoreStructToNativePtr(
     NonWritableBasicBlock next_block = i == slots.size() - 1
         ? insert_before : read_write_info.children()[i+1].entry_block();
     child_slot_desc->CodegenWriteToSlotHelper(child_read_write_info, main_tuple_ptr,
-        struct_slot_ptr, pool_val, next_block);
+        struct_slot_ptr, struct_slot_type, pool_val, next_block);
   }
 }
 
@@ -1320,11 +1324,11 @@ llvm::Value* CodegenStrOrCollValueGetPtr(LlvmCodeGen* codegen, LlvmBuilder* buil
     return builder->CreateCall(str_ptr_fn,
         llvm::ArrayRef<llvm::Value*>({str_or_coll_value_addr}), name);
   } else {
-    DCHECK(str_or_coll_value_addr->getType() ==
-        codegen->GetStructType<CollectionValue>()->getPointerTo());
-    llvm::Value* ptr_addr = builder->CreateStructGEP(nullptr, str_or_coll_value_addr,
+    llvm::StructType* coll_value_type = codegen->GetStructType<CollectionValue>();
+    DCHECK(str_or_coll_value_addr->getType() == coll_value_type->getPointerTo());
+    llvm::Value* ptr_addr = builder->CreateStructGEP(coll_value_type, str_or_coll_value_addr,
         COLL_VALUE_PTR_IDX, name + "_addr");
-    return builder->CreateLoad(ptr_addr, name);
+    return builder->CreateLoad(codegen->i8_ptr_type(), ptr_addr, name);
   }
 }
 
@@ -1337,11 +1341,11 @@ llvm::Value* CodegenStrOrCollValueGetLen(LlvmCodeGen* codegen, LlvmBuilder* buil
     return builder->CreateCall(str_len_fn,
         llvm::ArrayRef<llvm::Value*>({str_or_coll_value_addr}), name);
   } else {
-    DCHECK(str_or_coll_value_addr->getType() ==
-        codegen->GetStructType<CollectionValue>()->getPointerTo());
-    llvm::Value* len_addr = builder->CreateStructGEP(nullptr, str_or_coll_value_addr,
+    llvm::StructType* coll_value_type = codegen->GetStructType<CollectionValue>();
+    DCHECK(str_or_coll_value_addr->getType() == coll_value_type->getPointerTo());
+    llvm::Value* len_addr = builder->CreateStructGEP(coll_value_type, str_or_coll_value_addr,
         COLL_VALUE_LEN_IDX, name + "_addr");
-    return builder->CreateLoad(len_addr, name);
+    return builder->CreateLoad(codegen->i32_type(), len_addr, name);
   }
 }
 
@@ -1449,7 +1453,7 @@ void SlotDescriptor::CodegenWriteCollectionItemsToSlot(LlvmCodeGen* codegen,
 
   // Loop condition block
   builder->SetInsertPoint(loop_condition_block);
-  llvm::Value* item_index = builder->CreateLoad(item_index_addr, "item_index");
+  llvm::Value* item_index = builder->CreateLoad(codegen->i32_type(), item_index_addr, "item_index");
   llvm::Value* continue_loop = builder->CreateICmpSLT(
       item_index, num_tuples, "continue_loop");
   builder->CreateCondBr(continue_loop, loop_body_block, loop_exit_block);
@@ -1479,15 +1483,16 @@ void SlotDescriptor::CodegenWriteCollectionItemLoopBody(LlvmCodeGen* codegen,
   const TupleDescriptor* children_tuple_desc = children_tuple_descriptor();
   DCHECK(children_tuple_desc != nullptr);
 
-  llvm::Type* children_tuple_struct_type = children_tuple_desc->GetLlvmStruct(codegen);
+  llvm::StructType* children_tuple_struct_type = children_tuple_desc->GetLlvmStruct(codegen);
   DCHECK(children_tuple_struct_type != nullptr);
   llvm::PointerType* children_tuple_type = codegen->GetPtrType(
       children_tuple_struct_type);
 
   llvm::Value* children_tuple_array = builder->CreateBitCast(collection_value_ptr,
       children_tuple_type, "children_tuple_array");
-  llvm::Value* children_tuple = builder->CreateInBoundsGEP(children_tuple_array,
-      item_index, "children_tuple");
+  DCHECK(false) << "This type is wrong and needs more work.";
+  llvm::Value* children_tuple = builder->CreateInBoundsGEP(children_tuple_struct_type,
+      children_tuple_array, item_index, "children_tuple");
 
   CodegenWriteCollectionIterateOverChildren(codegen, builder, children_tuple,
       children_tuple, fn, insert_before, pool_val);

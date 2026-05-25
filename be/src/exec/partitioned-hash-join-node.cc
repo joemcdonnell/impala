@@ -1364,8 +1364,8 @@ Status PartitionedHashJoinPlanNode::CodegenCreateOutputRow(
   // Copy probe row
   codegen->CodegenMemcpy(&builder, out_row_arg, probe_row_arg, probe_tuple_row_size);
   llvm::Value* build_row_idx[] = {codegen->GetI32Constant(num_probe_tuples)};
-  llvm::Value* build_row_dst =
-      builder.CreateInBoundsGEP(out_row_arg, build_row_idx, "build_dst_ptr");
+  llvm::Value* build_row_dst = builder.CreateInBoundsGEP(codegen->ptr_type(),
+      out_row_arg, build_row_idx, "build_dst_ptr");
 
   // Copy build row.
   llvm::BasicBlock* build_not_null_block =
@@ -1387,8 +1387,8 @@ Status PartitionedHashJoinPlanNode::CodegenCreateOutputRow(
     for (int i = 0; i < num_build_tuples; ++i) {
       llvm::Value* array_idx[] = {
           codegen->GetI32Constant(i + num_probe_tuples)};
-      llvm::Value* dst =
-          builder.CreateInBoundsGEP(out_row_arg, array_idx, "dst_tuple_ptr");
+      llvm::Value* dst = builder.CreateInBoundsGEP(codegen->ptr_type(), out_row_arg,
+          array_idx, "dst_tuple_ptr");
       builder.CreateStore(codegen->null_ptr_value(), dst);
     }
     builder.CreateRetVoid();

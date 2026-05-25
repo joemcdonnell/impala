@@ -42,6 +42,7 @@
 #include <llvm/IR/Verifier.h>
 #include <llvm/Linker/Linker.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/OptimizationLevel.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/ErrorHandling.h>
@@ -121,7 +122,7 @@ DEFINE_string_hidden(llvm_cpu_attr_whitelist, "crc,neon,fp-armv8,crypto",
 #else
 DEFINE_string_hidden(llvm_cpu_attr_whitelist, "64bit,adx,aes,avx,avx2,bmi,bmi2,cmov,cx16,f16c,"
     "fma,fsgsbase,hle,invpcid,lzcnt,mmx,movbe,pclmul,popcnt,prfchw,rdrnd,rdseed,rtm,smap,"
-    "sse,sse2,sse3,sse4.1,sse4.2,ssse3,xsave,xsaveopt",
+    "sse,sse2,sse3,sse4.1,sse4.2,ssse3,xsave,xsaveopt,crc32",
     "(Experimental) a comma-separated list of LLVM CPU attribute flags that are enabled "
     "for runtime code generation. The default flags are a known-good set that are "
     "routinely tested. This flag is provided to enable additional LLVM CPU attribute "
@@ -149,8 +150,8 @@ const map<int64_t, std::string> LlvmCodeGen::cpu_flag_mappings_{
     {~(CpuInfo::PCLMULQDQ), "-pclmul"}};
 
 [[noreturn]] static void LlvmCodegenHandleError(
-    void* user_data, const string& reason, bool gen_crash_diag) {
-  LOG(FATAL) << "LLVM hit fatal error: " << reason.c_str();
+    void* user_data, const char* reason, bool gen_crash_diag) {
+  LOG(FATAL) << "LLVM hit fatal error: " << reason;
   std::abort();
 }
 
@@ -229,6 +230,7 @@ LlvmCodeGen::LlvmCodeGen(FragmentState* state, ObjectPool* pool,
   DCHECK(llvm_initialized_) << "Must call LlvmCodeGen::InitializeLlvm first.";
 
   context_->setDiagnosticHandlerCallBack(&DiagnosticHandler::DiagnosticHandlerFn, this);
+  context_->setOpaquePointers(false);
   load_module_timer_ = ADD_TIMER(profile_, "LoadTime");
   prepare_module_timer_ = ADD_TIMER(profile_, "PrepareTime");
   codegen_cache_lookup_timer_ = ADD_TIMER(profile_, "CodegenCacheLookupTime");
@@ -659,7 +661,7 @@ llvm::Value* LlvmCodeGen::GetStringConstant(
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(*module_, const_string->getType(),
       true, llvm::GlobalValue::PrivateLinkage, const_string);
   // Get a pointer to the first element of the string.
-  return builder->CreateConstInBoundsGEP2_32(NULL, gv, 0, 0, "");
+  return builder->CreateConstInBoundsGEP2_32(const_string->getType(), gv, 0, 0, "");
 }
 
 llvm::AllocaInst* LlvmCodeGen::CreateEntryBlockAlloca(
@@ -1452,23 +1454,23 @@ Status LlvmCodeGen::OptimizeModule() {
   pass_builder.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   TCodeGenOptLevel::type opt_level = state_->query_options().codegen_opt_level;
-  llvm::PassBuilder::OptimizationLevel opt;
+  llvm::OptimizationLevel opt;
   // GCC's -Werror=switch errors if a case is not covered.
   switch (opt_level) {
     case TCodeGenOptLevel::O0:
       // Default optimization pipeline requires O1 or greater, so for O0 we skip.
       return Status::OK();
     case TCodeGenOptLevel::O1:
-      opt = llvm::PassBuilder::OptimizationLevel::O1;
+      opt = llvm::OptimizationLevel::O1;
       break;
     case TCodeGenOptLevel::Os:
-      opt = llvm::PassBuilder::OptimizationLevel::Os;
+      opt = llvm::OptimizationLevel::Os;
       break;
     case TCodeGenOptLevel::O2:
-      opt = llvm::PassBuilder::OptimizationLevel::O2;
+      opt = llvm::OptimizationLevel::O2;
       break;
     case TCodeGenOptLevel::O3:
-      opt = llvm::PassBuilder::OptimizationLevel::O3;
+      opt = llvm::OptimizationLevel::O3;
       break;
   }
   llvm::ModulePassManager pass_manager = pass_builder.buildPerModuleDefaultPipeline(opt);
@@ -1620,7 +1622,7 @@ Status LlvmCodeGen::GetSymbols(const string& file, const string& module_id,
 // }
 void LlvmCodeGen::CodegenMinMax(LlvmBuilder* builder, const ColumnType& type,
     llvm::Value* src, llvm::Value* dst_slot_ptr, bool min, llvm::Function* fn) {
-  llvm::Value* dst = builder->CreateLoad(dst_slot_ptr, "dst_val");
+  llvm::Value* dst = builder->CreateLoad(GetSlotType(type), dst_slot_ptr, "dst_val");
 
   llvm::Value* compare = NULL;
   switch (type.type) {
@@ -1758,7 +1760,7 @@ void LlvmCodeGen::CodegenClearNullBits(
   llvm::Value* int8_ptr = builder->CreateBitCast(tuple_ptr, ptr_type(), "int8_ptr");
   llvm::Value* null_bytes_offset = GetI32Constant(tuple_desc.null_bytes_offset());
   llvm::Value* null_bytes_ptr =
-      builder->CreateInBoundsGEP(int8_ptr, null_bytes_offset, "null_bytes_ptr");
+    builder->CreateInBoundsGEP(i8_type(), int8_ptr, null_bytes_offset, "null_bytes_ptr");
   CodegenMemset(builder, null_bytes_ptr, 0, tuple_desc.num_null_bytes());
 }
 
@@ -1778,12 +1780,16 @@ llvm::Value* LlvmCodeGen::CodegenMemPoolAllocate(LlvmBuilder* builder,
   return builder->CreateCall(allocate_fn, fn_args, name);
 }
 
-llvm::Value* LlvmCodeGen::CodegenArrayAt(
-    LlvmBuilder* builder, llvm::Value* array, int idx, const char* name) {
+llvm::Value* LlvmCodeGen::CodegenArrayAt(LlvmBuilder* builder, llvm::Value* array,
+    llvm::Type* elementType, int idx, const char* name) {
   DCHECK(array->getType()->isPointerTy() || array->getType()->isArrayTy())
       << Print(array->getType());
-  llvm::Value* ptr = builder->CreateConstGEP1_32(array, idx);
-  return builder->CreateLoad(ptr, name);
+  DCHECK(llvm::cast<llvm::PointerType>(
+      array->getType()->getScalarType())->isOpaqueOrPointeeTypeMatches(elementType))
+      << LlvmCodeGen::Print(array->getType()->getScalarType())
+      << " pointer to " << LlvmCodeGen::Print(elementType);
+  llvm::Value* ptr = builder->CreateConstGEP1_32(elementType, array, idx);
+  return builder->CreateLoad(elementType, ptr, name);
 }
 
 llvm::Value* LlvmCodeGen::CodegenCallFunction(LlvmBuilder* builder,
@@ -1871,7 +1877,8 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
       int i = 0;
       while (num_bytes >= 8) {
         llvm::Value* index[] = {GetI32Constant(i++)};
-        llvm::Value* d = builder.CreateLoad(builder.CreateInBoundsGEP(ptr, index));
+        llvm::Value* d = builder.CreateLoad(i64_type(),
+            builder.CreateInBoundsGEP(i64_type(), ptr, index));
 #ifdef __aarch64__
         result = builder.CreateCall(crc64_fn, llvm::ArrayRef<llvm::Value*>({result, d}));
 #else
@@ -1885,35 +1892,35 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
 #endif
       llvm::Value* index[] = {GetI32Constant(i * 8)};
       // Update data to past the 8-byte chunks
-      data = builder.CreateInBoundsGEP(data, index);
+      data = builder.CreateInBoundsGEP(i8_type(), data, index);
     }
 
     if (num_bytes >= 4) {
       DCHECK_LT(num_bytes, 8);
       llvm::Value* ptr = builder.CreateBitCast(data, i32_ptr_type());
-      llvm::Value* d = builder.CreateLoad(ptr);
+      llvm::Value* d = builder.CreateLoad(i32_type(), ptr);
       result = builder.CreateCall(crc32_fn, llvm::ArrayRef<llvm::Value*>({result, d}));
       llvm::Value* index[] = {GetI32Constant(4)};
-      data = builder.CreateInBoundsGEP(data, index);
+      data = builder.CreateInBoundsGEP(i8_type(), data, index);
       num_bytes -= 4;
     }
 
     if (num_bytes >= 2) {
       DCHECK_LT(num_bytes, 4);
       llvm::Value* ptr = builder.CreateBitCast(data, i16_ptr_type());
-      llvm::Value* d = builder.CreateLoad(ptr);
+      llvm::Value* d = builder.CreateLoad(i16_type(), ptr);
 #ifdef __aarch64__
       d = builder.CreateZExt(d, i32_type());
 #endif
       result = builder.CreateCall(crc16_fn, llvm::ArrayRef<llvm::Value*>({result, d}));
       llvm::Value* index[] = {GetI16Constant(2)};
-      data = builder.CreateInBoundsGEP(data, index);
+      data = builder.CreateInBoundsGEP(i8_type(), data, index);
       num_bytes -= 2;
     }
 
     if (num_bytes > 0) {
       DCHECK_EQ(num_bytes, 1);
-      llvm::Value* d = builder.CreateLoad(data);
+      llvm::Value* d = builder.CreateLoad(i8_type(), data);
 #ifdef __aarch64__
       d = builder.CreateZExt(d, i32_type());
 #endif
@@ -1975,7 +1982,7 @@ llvm::Constant* LlvmCodeGen::ConstantToGVPtr(
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(
       *module_, type, true, llvm::GlobalValue::PrivateLinkage, ir_constant, name);
   return llvm::ConstantExpr::getGetElementPtr(
-      NULL, gv, llvm::ArrayRef<llvm::Constant*>({GetI32Constant(0)}));
+      type, gv, llvm::ArrayRef<llvm::Constant*>({GetI32Constant(0)}));
 }
 
 llvm::Constant* LlvmCodeGen::ConstantsToGVArrayPtr(llvm::Type* element_type,

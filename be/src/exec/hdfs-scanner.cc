@@ -434,7 +434,7 @@ Status HdfsScanner::CodegenWriteCompleteTuple(const HdfsScanPlanNode* node,
       builder.CreateBitCast(tuple_row_arg, llvm::PointerType::get(tuple_ptr_type, 0));
   llvm::Value* tuple_row_idxs[] = {codegen->GetI32Constant(0)};
   llvm::Value* tuple_in_row_addr =
-      builder.CreateInBoundsGEP(tuple_row_typed, tuple_row_idxs);
+      builder.CreateInBoundsGEP(tuple_ptr_type, tuple_row_typed, tuple_row_idxs);
   builder.CreateStore(tuple_arg, tuple_in_row_addr);
   builder.CreateBr(parse_block);
 
@@ -471,13 +471,16 @@ Status HdfsScanner::CodegenWriteCompleteTuple(const HdfsScanPlanNode* node,
       llvm::Value* error_idxs[] = {
           codegen->GetI32Constant(slot_idx),
       };
+      llvm::Type* field_loc_struct = codegen->GetStructType<FieldLocation>();
       llvm::Value* data_ptr =
-          builder.CreateInBoundsGEP(fields_arg, data_idxs, "data_ptr");
-      llvm::Value* len_ptr = builder.CreateInBoundsGEP(fields_arg, len_idxs, "len_ptr");
+          builder.CreateInBoundsGEP(field_loc_struct, fields_arg, data_idxs, "data_ptr");
+      llvm::Value* len_ptr =
+          builder.CreateInBoundsGEP(field_loc_struct, fields_arg, len_idxs, "len_ptr");
       llvm::Value* error_ptr =
-          builder.CreateInBoundsGEP(errors_arg, error_idxs, "slot_error_ptr");
-      llvm::Value* data = builder.CreateLoad(data_ptr, "data");
-      llvm::Value* len = builder.CreateLoad(len_ptr, "len");
+         builder.CreateInBoundsGEP(codegen->i8_type(), errors_arg, error_idxs,
+             "slot_error_ptr");
+      llvm::Value* data = builder.CreateLoad(codegen->ptr_type(), data_ptr, "data");
+      llvm::Value* len = builder.CreateLoad(codegen->i32_type(), len_ptr, "len");
 
       // Convert length to positive if it is negative. Negative lengths are assigned to
       // slots that contain escape characters.
