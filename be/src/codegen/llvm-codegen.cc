@@ -230,7 +230,6 @@ LlvmCodeGen::LlvmCodeGen(FragmentState* state, ObjectPool* pool,
   DCHECK(llvm_initialized_) << "Must call LlvmCodeGen::InitializeLlvm first.";
 
   context_->setDiagnosticHandlerCallBack(&DiagnosticHandler::DiagnosticHandlerFn, this);
-  context_->setOpaquePointers(false);
   load_module_timer_ = ADD_TIMER(profile_, "LoadTime");
   prepare_module_timer_ = ADD_TIMER(profile_, "PrepareTime");
   codegen_cache_lookup_timer_ = ADD_TIMER(profile_, "CodegenCacheLookupTime");
@@ -493,7 +492,7 @@ Status LlvmCodeGen::Init(unique_ptr<llvm::Module> module) {
   module_->setDataLayout(execution_engine_->getDataLayout());
 
   void_type_ = llvm::Type::getVoidTy(context());
-  ptr_type_ = llvm::PointerType::get(i8_type(), 0);
+  ptr_type_ = llvm::PointerType::getUnqual(context());
   true_value_ = llvm::ConstantInt::get(context(), llvm::APInt(1, true, true));
   false_value_ = llvm::ConstantInt::get(context(), llvm::APInt(1, false, true));
 
@@ -617,7 +616,7 @@ llvm::Type* LlvmCodeGen::GetSlotType(const ColumnType& type) {
 }
 
 llvm::PointerType* LlvmCodeGen::GetSlotPtrType(const ColumnType& type) {
-  return llvm::PointerType::get(GetSlotType(type), 0);
+  return llvm::PointerType::getUnqual(context());
 }
 
 llvm::Type* LlvmCodeGen::GetNamedType(const string& name) {
@@ -627,21 +626,23 @@ llvm::Type* LlvmCodeGen::GetNamedType(const string& name) {
 }
 
 llvm::PointerType* LlvmCodeGen::GetNamedPtrType(const string& name) {
-  llvm::Type* type = GetNamedType(name);
-  DCHECK(type != NULL) << name;
-  return llvm::PointerType::get(type, 0);
+  // Auto-register an opaque placeholder for types used only as pointers in the IR.
+  if (llvm::StructType::getTypeByName(context(), name) == nullptr) {
+    llvm::StructType::create(context(), name);
+  }
+  return llvm::PointerType::getUnqual(context());
 }
 
 llvm::PointerType* LlvmCodeGen::GetPtrType(llvm::Type* type) {
-  return llvm::PointerType::get(type, 0);
+  return llvm::PointerType::getUnqual(context());
 }
 
 llvm::PointerType* LlvmCodeGen::GetPtrPtrType(llvm::Type* type) {
-  return llvm::PointerType::get(llvm::PointerType::get(type, 0), 0);
+  return llvm::PointerType::getUnqual(context());
 }
 
 llvm::PointerType* LlvmCodeGen::GetNamedPtrPtrType(const string& name) {
-  return llvm::PointerType::get(GetNamedPtrType(name), 0);
+  return llvm::PointerType::getUnqual(context());
 }
 
 llvm::Constant* LlvmCodeGen::GetIntConstant(
@@ -1784,10 +1785,6 @@ llvm::Value* LlvmCodeGen::CodegenArrayAt(LlvmBuilder* builder, llvm::Value* arra
     llvm::Type* elementType, int idx, const char* name) {
   DCHECK(array->getType()->isPointerTy() || array->getType()->isArrayTy())
       << Print(array->getType());
-  DCHECK(llvm::cast<llvm::PointerType>(
-      array->getType()->getScalarType())->isOpaqueOrPointeeTypeMatches(elementType))
-      << LlvmCodeGen::Print(array->getType()->getScalarType())
-      << " pointer to " << LlvmCodeGen::Print(elementType);
   llvm::Value* ptr = builder->CreateConstGEP1_32(elementType, array, idx);
   return builder->CreateLoad(elementType, ptr, name);
 }

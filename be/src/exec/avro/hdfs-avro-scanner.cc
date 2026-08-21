@@ -806,7 +806,7 @@ Status HdfsAvroScanner::CodegenMaterializeTuple(const HdfsScanPlanNode* node,
   TupleDescriptor* tuple_desc = const_cast<TupleDescriptor*>(node->tuple_desc_);
   llvm::StructType* tuple_type = tuple_desc->GetLlvmStruct(codegen);
   if (tuple_type == nullptr) return Status("Could not generate tuple struct.");
-  llvm::Type* tuple_ptr_type = llvm::PointerType::get(tuple_type, 0);
+  llvm::Type* tuple_ptr_type = codegen->ptr_type();
 
   llvm::PointerType* tuple_opaque_ptr_type = codegen->GetStructPtrType<Tuple>();
 

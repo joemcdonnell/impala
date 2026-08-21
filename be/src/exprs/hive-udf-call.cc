@@ -361,10 +361,7 @@ Status HiveUdfCall::CodegenEvalChildren(LlvmCodeGen* codegen, LlvmBuilder* build
 llvm::Value* CastPtrAndLoad(LlvmCodeGen* codegen, LlvmBuilder* builder,
     const ColumnType& type, llvm::Value* ptr, const std::string& name) {
   llvm::Type* ltype = CodegenAnyVal::GetLoweredType(codegen, type);
-  llvm::PointerType* const ptr_type = ltype->getPointerTo();
-  llvm::Value* const ptr_cast =
-      builder->CreateBitCast(ptr, ptr_type, name + "_ptr_cast");
-  return builder->CreateLoad(ltype, ptr_cast, name);
+  return builder->CreateLoad(ltype, ptr, name);
 }
 
 /// Sample IR for calling the following Java function:

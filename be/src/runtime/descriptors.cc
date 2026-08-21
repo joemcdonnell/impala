@@ -748,11 +748,6 @@ void SlotDescriptor::CodegenLoadAnyVal(CodegenAnyVal* any_val, llvm::Value* raw_
   LlvmBuilder* const builder = any_val->builder();
   const ColumnType& type = any_val->type();
   llvm::Type* raw_val_type = codegen->GetSlotType(type);
-  DCHECK(llvm::cast<llvm::PointerType>(
-      raw_val_ptr->getType())->isOpaqueOrPointeeTypeMatches(raw_val_type))
-      << endl
-      << LlvmCodeGen::Print(raw_val_ptr) << endl
-      << type << " => " << LlvmCodeGen::Print(raw_val_type);
   switch (type.type) {
     case TYPE_STRING:
     case TYPE_VARCHAR: {
@@ -932,7 +927,7 @@ void SlotDescriptor::CodegenWriteToSlot(const CodegenAnyValReadWriteInfo& read_w
     llvm::Value* tuple_llvm_struct_ptr, llvm::StructType* tuple_llvm_struct_type,
     llvm::Value* pool_val, llvm::BasicBlock* insert_before) const {
   DCHECK(tuple_llvm_struct_ptr->getType()->isPointerTy());
-  DCHECK(tuple_llvm_struct_ptr->getType()->getPointerElementType()->isStructTy());
+  // With opaque pointers the element type cannot be verified at runtime.
   LlvmBuilder* builder = read_write_info.builder();
   llvm::LLVMContext& context = read_write_info.codegen()->context();
   llvm::Function* fn = builder->GetInsertBlock()->getParent();
@@ -978,10 +973,6 @@ void SlotDescriptor::CodegenWriteToSlotHelper(
 
   // Non-null block: write slot
   builder->SetInsertPoint(read_write_info.non_null_block());
-  DCHECK(llvm::cast<llvm::PointerType>(tuple_llvm_struct_ptr->getType()->getScalarType()
-      )->isOpaqueOrPointeeTypeMatches(tuple_llvm_struct_type))
-      << LlvmCodeGen::Print(tuple_llvm_struct_ptr->getType()->getScalarType())
-      << " pointer to " << LlvmCodeGen::Print(tuple_llvm_struct_type);
   llvm::Value* slot = builder->CreateStructGEP(tuple_llvm_struct_type,
       tuple_llvm_struct_ptr, llvm_field_idx(), "slot");
   if (read_write_info.type().IsStructType()) {
@@ -1011,9 +1002,9 @@ void SlotDescriptor::CodegenStoreStructToNativePtr(
   DCHECK(children_tuple_descriptor_ != nullptr);
   DCHECK(read_write_info.type().IsStructType());
   DCHECK(main_tuple_ptr->getType()->isPointerTy());
-  DCHECK(main_tuple_ptr->getType()->getPointerElementType()->isStructTy());
+  // With opaque pointers the element type cannot be verified at runtime.
   DCHECK(struct_slot_ptr->getType()->isPointerTy());
-  DCHECK(struct_slot_ptr->getType()->getPointerElementType()->isStructTy());
+  // With opaque pointers the element type cannot be verified at runtime.
 
   LlvmBuilder* builder = read_write_info.builder();
   const std::vector<SlotDescriptor*>& slots = children_tuple_descriptor_->slots();
@@ -1316,16 +1307,15 @@ constexpr int COLL_VALUE_PTR_IDX = 0;
 constexpr int COLL_VALUE_LEN_IDX = 1;
 
 llvm::Value* CodegenStrOrCollValueGetPtr(LlvmCodeGen* codegen, LlvmBuilder* builder,
-    llvm::Value* str_or_coll_value_addr, const string& name = "") {
-  if (str_or_coll_value_addr->getType() ==
-      codegen->GetStructType<StringValue>()->getPointerTo()) {
+    llvm::Value* str_or_coll_value_addr, bool is_string_type,
+    const string& name = "") {
+  if (is_string_type) {
     llvm::Function* str_ptr_fn = codegen->GetFunction(
         IRFunction::STRING_VALUE_PTR, false);
     return builder->CreateCall(str_ptr_fn,
         llvm::ArrayRef<llvm::Value*>({str_or_coll_value_addr}), name);
   } else {
     llvm::StructType* coll_value_type = codegen->GetStructType<CollectionValue>();
-    DCHECK(str_or_coll_value_addr->getType() == coll_value_type->getPointerTo());
     llvm::Value* ptr_addr = builder->CreateStructGEP(coll_value_type, str_or_coll_value_addr,
         COLL_VALUE_PTR_IDX, name + "_addr");
     return builder->CreateLoad(codegen->i8_ptr_type(), ptr_addr, name);
@@ -1333,16 +1323,15 @@ llvm::Value* CodegenStrOrCollValueGetPtr(LlvmCodeGen* codegen, LlvmBuilder* buil
 }
 
 llvm::Value* CodegenStrOrCollValueGetLen(LlvmCodeGen* codegen, LlvmBuilder* builder,
-    llvm::Value* str_or_coll_value_addr, const string& name = "") {
-  if (str_or_coll_value_addr->getType() ==
-      codegen->GetStructType<StringValue>()->getPointerTo()) {
+    llvm::Value* str_or_coll_value_addr, bool is_string_type,
+    const string& name = "") {
+  if (is_string_type) {
     llvm::Function* str_len_fn = codegen->GetFunction(
         IRFunction::STRING_VALUE_LEN, false);
     return builder->CreateCall(str_len_fn,
         llvm::ArrayRef<llvm::Value*>({str_or_coll_value_addr}), name);
   } else {
     llvm::StructType* coll_value_type = codegen->GetStructType<CollectionValue>();
-    DCHECK(str_or_coll_value_addr->getType() == coll_value_type->getPointerTo());
     llvm::Value* len_addr = builder->CreateStructGEP(coll_value_type, str_or_coll_value_addr,
         COLL_VALUE_LEN_IDX, name + "_addr");
     return builder->CreateLoad(codegen->i32_type(), len_addr, name);
@@ -1561,9 +1550,9 @@ void SlotDescriptor::CodegenWriteCollectionVarlenChild(LlvmCodeGen* codegen,
   llvm::Value* child_str_or_coll_value_slot = builder->CreateStructGEP(nullptr,
       children_tuple, llvm_field_idx(), "child_str_or_coll_value_addr");
   llvm::Value* child_str_or_coll_value_ptr = CodegenStrOrCollValueGetPtr(codegen, builder,
-      child_str_or_coll_value_slot, "child_str_or_coll_value_ptr");
+      child_str_or_coll_value_slot, type_.IsVarLenStringType(), "child_str_or_coll_value_ptr");
   llvm::Value* child_str_or_coll_value_len = CodegenStrOrCollValueGetLen(codegen, builder,
-      child_str_or_coll_value_slot, "child_str_or_coll_value_len");
+      child_str_or_coll_value_slot, type_.IsVarLenStringType(), "child_str_or_coll_value_len");
 
   CodegenAnyValReadWriteInfo child_rwi(codegen, builder, type());
   child_rwi.SetPtrAndLen(child_str_or_coll_value_ptr, child_str_or_coll_value_len);

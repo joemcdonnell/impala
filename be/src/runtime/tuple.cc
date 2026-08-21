@@ -440,10 +440,8 @@ Status Tuple::CodegenMaterializeExprs(LlvmCodeGen* codegen, bool collect_varlen_
   llvm::PointerType* expr_evals_type =
       codegen->GetStructPtrPtrType<ScalarExprEvaluator>();
   llvm::PointerType* pool_type = codegen->GetStructPtrType<MemPool>();
-  llvm::Type* string_values_type =
-      CodegenTypes::getStringValuePtrVecType(codegen)->getPointerTo();
-  llvm::Type* coll_values_and_sizes_type =
-      CodegenTypes::getCollValuePtrAndSizeVecType(codegen)->getPointerTo();
+  llvm::Type* string_values_type = codegen->ptr_type();
+  llvm::Type* coll_values_and_sizes_type = codegen->ptr_type();
   llvm::PointerType* int_ptr_type = codegen->i32_ptr_type();
 
   LlvmCodeGen::FnPrototype prototype(codegen, "MaterializeExprs", codegen->void_type());
@@ -594,8 +592,8 @@ Status Tuple::CodegenTryDeepCopy(LlvmCodeGen* codegen, const TupleDescriptor* tu
   llvm::Value* desc = args[4];
 
   // Save current value of data and offset, so it can be reset if running out of memory
-  llvm::Value* data_start = builder.CreateLoad(data, "data_start");
-  llvm::Value* offset_start = builder.CreateLoad(offset, "offset_start");
+  llvm::Value* data_start = builder.CreateLoad(codegen->ptr_type(), data, "data_start");
+  llvm::Value* offset_start = builder.CreateLoad(codegen->i32_type(), offset, "offset_start");
 
   llvm::Value* dst_tuple = builder.CreateBitCast(data_start, this_ptr_type);
 

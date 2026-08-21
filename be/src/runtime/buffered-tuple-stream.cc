@@ -1055,7 +1055,7 @@ Status BufferedTupleStream::CodegenDeepCopy(LlvmCodeGen* codegen,
   llvm::BasicBlock* return_block = llvm::BasicBlock::Create(context, "return", *fn);
 
   // uint8_t* data_start = *data;
-  llvm::Value* data_start = builder.CreateLoad(data_arg, "data_start");
+  llvm::Value* data_start = builder.CreateLoad(codegen->ptr_type(), data_arg, "data_start");
 
   if (has_nullable_tuple) {
     // bool result = CopyTupleNullIndicators(row, num_tuples, data, data_end);
