@@ -158,7 +158,7 @@ void CodegenCallWriteKuduValue(LlvmCodeGen* codegen, LlvmBuilder* builder, int c
 
   llvm::Value* const col_type_ptr = codegen->GetPtrTo(builder, type.ToIR(codegen));
   llvm::Value* const child_i8 = builder->CreateBitCast(
-      child_native_val, codegen->i8_type()->getPointerTo());
+      child_native_val, codegen->i8_ptr_type());
 
   // This can only fail if we set a col to an incorrect type, which would be a bug in
   // planning, so we could DCHECK but in codegen code we can't so we do not check it.

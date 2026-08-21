@@ -367,7 +367,7 @@ Status ScalarFnCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
               i - NumFixedArgs(), "arg_val_ptr");
     }
 #ifndef __aarch64__
-    DCHECK_EQ(arg_val_ptr->getType(), arg_type->getPointerTo());
+    DCHECK(arg_val_ptr->getType()->isPointerTy());
     // The result of the call must be stored in a lowered AnyVal
     llvm::Value* lowered_arg_val_ptr = builder.CreateBitCast(arg_val_ptr,
         CodegenAnyVal::GetLoweredPtrType(codegen, children_[i]->type()),

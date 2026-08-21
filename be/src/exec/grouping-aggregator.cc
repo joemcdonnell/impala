@@ -1347,7 +1347,7 @@ Status GroupingAggregatorConfig::CodegenCopyGroupingValues(LlvmCodeGen* codegen,
         {this_ptr, intermediate_tuple, idx, tuple_offset, buffer}, "bytes_copied");
 
     // increase buffer by bytes copied
-    buffer = builder.CreateGEP(buffer, bytes_copied, "buffer");
+    buffer = builder.CreateGEP(codegen->i8_type(), buffer, bytes_copied, "buffer");
   }
 
   builder.CreateRetVoid();

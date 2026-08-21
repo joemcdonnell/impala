@@ -387,7 +387,7 @@ Status HdfsScanner::CodegenWriteCompleteTuple(const HdfsScanPlanNode* node,
   // Generate the typed llvm struct for the output tuple
   llvm::StructType* tuple_type = tuple_desc->GetLlvmStruct(codegen);
   if (tuple_type == NULL) return Status("Could not generate tuple struct.");
-  llvm::PointerType* tuple_ptr_type = llvm::PointerType::get(tuple_type, 0);
+  llvm::PointerType* tuple_ptr_type = codegen->ptr_type();
 
   // Initialize the function prototype.  This needs to match
   // HdfsScanner::WriteCompleteTuple's signature identically.
@@ -431,7 +431,7 @@ Status HdfsScanner::CodegenWriteCompleteTuple(const HdfsScanPlanNode* node,
 
   // Put tuple in tuple_row
   llvm::Value* tuple_row_typed =
-      builder.CreateBitCast(tuple_row_arg, llvm::PointerType::get(tuple_ptr_type, 0));
+      builder.CreateBitCast(tuple_row_arg, codegen->ptr_type());
   llvm::Value* tuple_row_idxs[] = {codegen->GetI32Constant(0)};
   llvm::Value* tuple_in_row_addr =
       builder.CreateInBoundsGEP(tuple_ptr_type, tuple_row_typed, tuple_row_idxs);

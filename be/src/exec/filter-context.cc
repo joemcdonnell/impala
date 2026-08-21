@@ -416,7 +416,7 @@ Status FilterContext::CodegenInsert(LlvmCodeGen* codegen, ScalarExpr* filter_exp
         builder.CreateStructGEP(filter_context_type, this_arg, 4, "local_min_max_filter_ptr");
     llvm::Type* filter_impl_type = codegen->GetNamedPtrType(
         MinMaxFilter::GetLlvmClassName(filter_expr->type().type));
-    llvm::PointerType* min_max_filter_type = filter_impl_type->getPointerTo();
+    llvm::PointerType* min_max_filter_type = codegen->ptr_type();
     local_min_max_filter_ptr = builder.CreatePointerCast(
         local_min_max_filter_ptr, min_max_filter_type, "cast_min_max_filter_ptr");
     local_filter_arg = builder.CreateLoad(
