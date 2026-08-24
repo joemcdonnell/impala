@@ -953,12 +953,11 @@ Status LlvmCodeGen::LoadFunction(const TFunction& fn, const string& symbol,
     // declaration, not a definition, since we do not create any basic blocks or
     // instructions in it.
     *llvm_fn = prototype.GeneratePrototype(nullptr, nullptr);
-#ifdef __aarch64__
     if (is_decimal) {
-      // Mark first argument as sret
-      (*llvm_fn)->addAttribute(1, llvm::Attribute::StructRet);
+      // Mark first argument as sret; LLVM 12+ requires an explicit type.
+      (*llvm_fn)->addParamAttr(0, llvm::Attribute::getWithStructRetType(
+          context(), GetNamedType(CodegenAnyVal::LLVM_DECIMALVAL_NAME)));
     }
-#endif
     // Associate the dynamically loaded function pointer with the Function* we defined.
     // This tells LLVM where the compiled function definition is located in memory.
     execution_engine()->addGlobalMapping(*llvm_fn, fn_ptr);

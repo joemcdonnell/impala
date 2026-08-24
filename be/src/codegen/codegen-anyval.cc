@@ -96,7 +96,7 @@ llvm::Type* CodegenAnyVal::GetLoweredType(LlvmCodeGen* cg, const ColumnType& typ
       return llvm::ArrayType::get(cg->i64_type(), 2);
 #endif
     case TYPE_DECIMAL: // %"struct.impala_udf::DecimalVal" (isn't lowered)
-                       // = { {i8}, [15 x i8], {i128} }
+                       // = { {i8}, {i128} }
       return cg->GetNamedType(LLVM_DECIMALVAL_NAME);
     case TYPE_DATE: // i64
       return cg->i64_type();
@@ -293,8 +293,7 @@ void CodegenAnyVal::SetIsNull(llvm::Value* is_null) {
       break;
     }
     case TYPE_DECIMAL: {
-      // Lowered type is of form { {i8}, [15 x i8], {i128} }. Set the i8 value to
-      // 'is_null'.
+      // Lowered type is of form { {i8}, {i128} }. Set the i8 value to 'is_null'.
       llvm::Value* is_null_ext =
           builder_->CreateZExt(is_null, codegen_->i8_type(), "is_null_ext");
       // Index into the {i8} struct as well as the outer struct.
@@ -384,13 +383,8 @@ llvm::Value* CodegenAnyVal::GetVal(const char* name) {
       return val;
     }
     case TYPE_DECIMAL: {
-#ifdef __aarch64__
-      // On aarch64, the Lowered type is of form { {i8}, {i128} }. No padding add.
+      // The Lowered type is of form { {i8}, {i128} }. No padding add.
       uint32_t idxs[] = {1, 0};
-#else
-      // On x86-64, Lowered type is of form { {i8}, [15 x i8], {i128} }.
-      uint32_t idxs[] = {2, 0};
-#endif
       // Get the i128 value and truncate it to the correct size.
       // (The {i128} corresponds to the union of the different width int types.)
       llvm::Value* val = builder_->CreateExtractValue(value_, idxs, name);
@@ -444,13 +438,8 @@ void CodegenAnyVal::SetVal(llvm::Value* val) {
       //  (The {i128} corresponds to the union of the different width int types.)
       DCHECK_EQ(val->getType()->getIntegerBitWidth(), type_.GetByteSize() * 8);
       val = builder_->CreateSExt(val, llvm::Type::getIntNTy(codegen_->context(), 128));
-#ifdef __aarch64__
-      // On aarch64, the Lowered type is of form { {i8}, {i128} }. No padding add.
+      // The Lowered type is of form { {i8}, {i128} }. No padding add.
       uint32_t idxs[] = {1, 0};
-#else
-      // On X86-64, the Lowered type is of the form { {i8}, [15 x i8], {i128} }
-      uint32_t idxs[] = {2, 0};
-#endif
       value_ = builder_->CreateInsertValue(value_, val, idxs, name_);
       break;
     }
@@ -803,8 +792,10 @@ llvm::Value* CodegenAnyVal::GetNullVal(LlvmCodeGen* codegen, llvm::Type* val_typ
       return llvm::ConstantStruct::get(struct_type, null_anyval,
           llvm::Constant::getNullValue(type2), llvm::Constant::getNullValue(type3));
     }
-#ifdef __aarch64__
-    else if (struct_type->getElementType(0)->isStructTy()) {
+    // Two-element struct: either { {i8}, T } (DecimalVal in LLVM 19, or aarch64)
+    // or { integer, T } (BigIntVal, DoubleVal, StringVal, etc.).
+    if (struct_type->getElementType(0)->isStructTy()) {
+      DCHECK_EQ(val_type, codegen->GetNamedType(LLVM_DECIMALVAL_NAME));
       llvm::StructType* anyval_struct_type =
           llvm::cast<llvm::StructType>(struct_type->getElementType(0));
       llvm::Type* is_null_type = anyval_struct_type->getElementType(0);
@@ -814,7 +805,6 @@ llvm::Value* CodegenAnyVal::GetNullVal(LlvmCodeGen* codegen, llvm::Type* val_typ
       return llvm::ConstantStruct::get(struct_type, null_anyval,
           llvm::Constant::getNullValue(type1));
     }
-#endif
     // Return the struct { 1, 0 } (the 'is_null' byte, i.e. the first value's first byte,
     // is set to 1, the other bytes don't matter)
     DCHECK_EQ(struct_type->getNumElements(), 2);
