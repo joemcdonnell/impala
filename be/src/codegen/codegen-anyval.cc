@@ -665,7 +665,7 @@ llvm::Value* CodegenAnyVal::EqToNativePtr(llvm::Value* native_ptr,
     bool inclusive_equality) {
   llvm::Value* val = NULL;
   if (!type_.IsStringType()) {
-    val = builder_->CreateLoad(codegen_->GetSlotType(type_), native_ptr);
+    val = builder_->CreateLoad(codegen_->GetSlotType(type_), native_ptr, type_);
   }
   switch (type_.type) {
     case TYPE_NULL:
