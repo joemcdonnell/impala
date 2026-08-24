@@ -261,7 +261,7 @@ Status CaseExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function**
     // Eval and return then value
     llvm::Value* then_val =
         CodegenAnyVal::CreateCall(codegen, &builder, child_fns[i + 1], args, "then_val");
-    builder.CreateRet(then_val);
+    CreateReturnValue(&builder, function, then_val);
 
     current_when_expr_block = continue_or_exit_block;
   }
@@ -270,9 +270,9 @@ Status CaseExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function**
   if (has_else_expr()) {
     llvm::Value* else_val = CodegenAnyVal::CreateCall(
         codegen, &builder, child_fns[num_children - 1], args, "else_val");
-    builder.CreateRet(else_val);
+    CreateReturnValue(&builder, function, else_val);
   } else {
-    builder.CreateRet(CodegenAnyVal::GetNullVal(codegen, type()));
+    CreateReturnValue(&builder, function, CodegenAnyVal::GetNullVal(codegen, type()));
   }
   *fn = codegen->FinalizeFunction(function);
   if (UNLIKELY(*fn == nullptr)) return Status(TErrorCode::IR_VERIFY_FAILED, "CaseExpr");

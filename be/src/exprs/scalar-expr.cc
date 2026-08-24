@@ -347,14 +347,25 @@ int ScalarExpr::GetSlotIds(vector<SlotId>* slot_ids) const {
 
 llvm::Function* ScalarExpr::CreateIrFunctionPrototype(
     const string& name, LlvmCodeGen* codegen, llvm::Value* (*args)[2]) {
-  llvm::Type* return_type = CodegenAnyVal::GetLoweredType(codegen, type());
+  bool is_decimal = type().type == TYPE_DECIMAL;
+  llvm::Type* return_type = is_decimal ?
+      codegen->void_type() : CodegenAnyVal::GetLoweredType(codegen, type());
   LlvmCodeGen::FnPrototype prototype(codegen, name, return_type);
+  llvm::Value* all_args[3];
+  int arg_offset = 0;
+  if (is_decimal) {
+    // Explicit output ptr avoids implicit sret in LLVM 19's JIT backend.
+    prototype.AddArgument(LlvmCodeGen::NamedVariable("output", codegen->ptr_type()));
+    arg_offset = 1;
+  }
   prototype.AddArgument(
       LlvmCodeGen::NamedVariable(
           "eval", codegen->GetStructPtrType<ScalarExprEvaluator>()));
   prototype.AddArgument(LlvmCodeGen::NamedVariable(
       "row", codegen->GetStructPtrType<TupleRow>()));
-  llvm::Function* function = prototype.GeneratePrototype(NULL, args[0]);
+  llvm::Function* function = prototype.GeneratePrototype(NULL, all_args);
+  (*args)[0] = all_args[arg_offset];
+  (*args)[1] = all_args[arg_offset + 1];
   DCHECK(function != NULL);
   return function;
 }
@@ -374,6 +385,16 @@ Status ScalarExpr::GetCodegendComputeFn(
     codegen->AddFunctionToJit(*fn, &codegend_compute_fn_);
   }
   return Status::OK();
+}
+
+void ScalarExpr::CreateReturnValue(LlvmBuilder* builder, llvm::Function* fn,
+    llvm::Value* val) {
+  if (fn->getReturnType()->isVoidTy()) {
+    builder->CreateStore(val, &*fn->arg_begin());
+    builder->CreateRetVoid();
+  } else {
+    builder->CreateRet(val);
+  }
 }
 
 #define SCALAR_EXPR_GET_VAL_INTERPRETED(type)                 \

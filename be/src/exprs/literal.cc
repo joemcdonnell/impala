@@ -455,7 +455,7 @@ Status Literal::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function** 
       return Status(ss.str());
   }
 
-  builder.CreateRet(v.GetLoweredValue());
+  CreateReturnValue(&builder, *fn, v.GetLoweredValue());
   *fn = codegen->FinalizeFunction(*fn);
   if (UNLIKELY(*fn == nullptr)) return Status(TErrorCode::IR_VERIFY_FAILED, "Literal");
   return Status::OK();
