@@ -586,7 +586,7 @@ Status HiveUdfCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functio
        {ir_type_ptr, fn_ctx, jni_ctx}, "ret_ptr");
 
    llvm::Value* ret_val = CastPtrAndLoad(codegen, &builder, type(), ret_ptr, "ret");
-   builder.CreateRet(ret_val);
+   CreateReturnValue(&builder, function, ret_val);
 
    *fn = codegen->FinalizeFunction(function);
    if (UNLIKELY(*fn == nullptr)) {

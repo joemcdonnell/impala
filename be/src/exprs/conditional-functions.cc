@@ -87,13 +87,13 @@ Status IfExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function** f
   builder.SetInsertPoint(return_then_block);
   llvm::Value* then_val =
       CodegenAnyVal::CreateCall(codegen, &builder, child_fns[1], args, "then_val");
-  builder.CreateRet(then_val);
+  CreateReturnValue(&builder, function, then_val);
 
   // Eval and return else value.
   builder.SetInsertPoint(return_else_block);
   llvm::Value* else_val =
       CodegenAnyVal::CreateCall(codegen, &builder, child_fns[2], args, "else_val");
-  builder.CreateRet(else_val);
+  CreateReturnValue(&builder, function, else_val);
 
   *fn = codegen->FinalizeFunction(function);
   if (UNLIKELY(*fn == nullptr)) return Status(TErrorCode::IR_VERIFY_FAILED, "IfExpr");
@@ -163,7 +163,7 @@ Status CoalesceExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
         child.GetIsNull(), next_null_check_block, return_val_block);
 
     builder.SetInsertPoint(return_val_block);
-    builder.CreateRet(child.GetLoweredValue());
+    CreateReturnValue(&builder, function, child.GetLoweredValue());
 
     current_null_check_block = next_null_check_block;
   }
@@ -175,7 +175,7 @@ Status CoalesceExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
   builder.SetInsertPoint(return_last_value_block);
   llvm::Value* last_child = CodegenAnyVal::CreateCall(
       codegen, &builder, child_fns[num_children - 1], args, "last_child");
-  builder.CreateRet(last_child);
+  CreateReturnValue(&builder, function, last_child);
 
   *fn = codegen->FinalizeFunction(function);
   if (UNLIKELY(*fn == nullptr)) {
@@ -232,12 +232,12 @@ Status IsNullExpr::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function
       first_value.GetIsNull(), return_second_value_block, return_first_value_block);
 
   builder.SetInsertPoint(return_first_value_block);
-  builder.CreateRet(first_value.GetLoweredValue());
+  CreateReturnValue(&builder, function, first_value.GetLoweredValue());
 
   builder.SetInsertPoint(return_second_value_block);
   llvm::Value* second_value = CodegenAnyVal::CreateCall(
       codegen, &builder, child_fns[1], args, "second_value");
-  builder.CreateRet(second_value);
+  CreateReturnValue(&builder, function, second_value);
 
   *fn = codegen->FinalizeFunction(function);
   if (UNLIKELY(*fn == nullptr)) return Status(TErrorCode::IR_VERIFY_FAILED, "IsNullExpr");

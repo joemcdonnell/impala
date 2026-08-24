@@ -119,7 +119,7 @@ Status NullLiteral::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functio
   LlvmBuilder builder(entry_block);
 
   llvm::Value* v = CodegenAnyVal::GetNullVal(codegen, type());
-  builder.CreateRet(v);
+  CreateReturnValue(&builder, *fn, v);
   *fn = codegen->FinalizeFunction(*fn);
   if (UNLIKELY(*fn == nullptr)) {
     return Status(TErrorCode::IR_VERIFY_FAILED, "NullLiteral");

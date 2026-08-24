@@ -223,7 +223,7 @@ Status SlotRef::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Function** 
 
   LlvmBuilder builder(codegen->context());
   CodegenAnyVal result_value = CodegenValue(codegen, &builder, *fn, eval_ptr, row_ptr);
-  builder.CreateRet(result_value.GetLoweredValue());
+  CreateReturnValue(&builder, *fn, result_value.GetLoweredValue());
 
   *fn = codegen->FinalizeFunction(*fn);
   if (UNLIKELY(*fn == NULL)) return Status(TErrorCode::IR_VERIFY_FAILED, "SlotRef");

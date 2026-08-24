@@ -59,7 +59,19 @@ SCALAR_EXPR_GET_VAL(BigIntVal, type_.type == PrimitiveType::TYPE_BIGINT);
 SCALAR_EXPR_GET_VAL(FloatVal, type_.type == PrimitiveType::TYPE_FLOAT);
 SCALAR_EXPR_GET_VAL(DoubleVal, type_.type == PrimitiveType::TYPE_DOUBLE);
 SCALAR_EXPR_GET_VAL(TimestampVal, type_.type == PrimitiveType::TYPE_TIMESTAMP);
-SCALAR_EXPR_GET_VAL(DecimalVal, type_.type == PrimitiveType::TYPE_DECIMAL);
+// JIT decimal functions use explicit output pointer: void fn(DecimalVal*, eval, row).
+typedef void (*DecimalValWrapper)(DecimalVal*, ScalarExprEvaluator*, const TupleRow*);
+inline DecimalVal ScalarExpr::GetDecimalVal(
+    ScalarExprEvaluator* eval, const TupleRow* row) const {
+  DCHECK(type_.type == PrimitiveType::TYPE_DECIMAL) << type_.DebugString();
+  DCHECK(eval != nullptr);
+  DecimalValWrapper fn =
+      reinterpret_cast<DecimalValWrapper>(codegend_compute_fn_.load());
+  if (fn == nullptr) return GetDecimalValInterpreted(eval, row);
+  DecimalVal v;
+  fn(&v, eval, row);
+  return v;
+}
 SCALAR_EXPR_GET_VAL(StringVal, type_.IsStringType() || type_.IsUuidType()
     || type_.type == PrimitiveType::TYPE_FIXED_UDA_INTERMEDIATE);
 SCALAR_EXPR_GET_VAL(DateVal, type_.type == PrimitiveType::TYPE_DATE);
