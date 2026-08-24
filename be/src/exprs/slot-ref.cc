@@ -388,7 +388,7 @@ CodegenAnyValReadWriteInfo SlotRef::CodegenReadSlot(LlvmCodeGen* codegen,
     DCHECK(date != nullptr);
     res.SetTimeAndDate(time_of_day, date);
   } else {
-    res.SetSimpleVal(builder->CreateLoad(codegen->GetSlotType(type_), val_ptr, "val"));
+    res.SetSimpleVal(builder->CreateLoad(codegen->GetSlotType(type_), val_ptr, type_, "val"));
   }
 
   res.SetFnCtxIdx(fn_ctx_idx_);

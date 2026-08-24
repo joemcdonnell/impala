@@ -802,9 +802,10 @@ void SlotDescriptor::CodegenLoadAnyVal(CodegenAnyVal* any_val, llvm::Value* raw_
     case TYPE_FLOAT:
     case TYPE_DOUBLE:
     case TYPE_DECIMAL:
-    case TYPE_DATE:
-      any_val->SetVal(builder->CreateLoad(raw_val_type, raw_val_ptr, "raw_val"));
+    case TYPE_DATE: {
+      any_val->SetVal(builder->CreateLoad(raw_val_type, raw_val_ptr, type, "raw_val"));
       break;
+    }
     default:
       DCHECK(false) << "NYI: " << type.DebugString();
       break;
@@ -1124,10 +1125,11 @@ void SlotDescriptor::CodegenStoreNonNullAnyVal(
     case TYPE_FLOAT:
     case TYPE_DOUBLE:
     case TYPE_DECIMAL:
-    case TYPE_DATE:
+    case TYPE_DATE: {
       // The representations of the types match - just store the value.
-      builder->CreateStore(read_write_info.GetSimpleVal(), raw_val_ptr);
+      builder->CreateStore(read_write_info.GetSimpleVal(), raw_val_ptr, type);
       break;
+    }
     case TYPE_STRUCT:
       DCHECK(false) << "Invalid type for this function. "
                     << "Call 'StoreStructToNativePtr()' instead.";

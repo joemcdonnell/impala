@@ -1635,7 +1635,7 @@ Status LlvmCodeGen::GetSymbols(const string& file, const string& module_id,
 // }
 void LlvmCodeGen::CodegenMinMax(LlvmBuilder* builder, const ColumnType& type,
     llvm::Value* src, llvm::Value* dst_slot_ptr, bool min, llvm::Function* fn) {
-  llvm::Value* dst = builder->CreateLoad(GetSlotType(type), dst_slot_ptr, "dst_val");
+  llvm::Value* dst = builder->CreateLoad(GetSlotType(type), dst_slot_ptr, type, "dst_val");
 
   llvm::Value* compare = NULL;
   switch (type.type) {
@@ -1688,7 +1688,7 @@ void LlvmCodeGen::CodegenMinMax(LlvmBuilder* builder, const ColumnType& type,
 
     builder->CreateCondBr(compare, ret_v1, ret_v2);
     builder->SetInsertPoint(ret_v1);
-    builder->CreateStore(src, dst_slot_ptr);
+    builder->CreateStore(src, dst_slot_ptr, type);
     builder->CreateBr(ret_v2);
     builder->SetInsertPoint(ret_v2);
   }

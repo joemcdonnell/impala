@@ -92,6 +92,28 @@ class CodeGenCacheKey;
 /// Define builder subclass in case we want to change the template arguments later
 class LlvmBuilder : public llvm::IRBuilder<> {
   using llvm::IRBuilder<>::IRBuilder;
+
+ public:
+  // Bring base overloads into scope to avoid name hiding.
+  using llvm::IRBuilder<>::CreateLoad;
+  using llvm::IRBuilder<>::CreateStore;
+
+  // Overloads that fix alignment for 16-byte decimal slots: LLVM 18+ assumes i128
+  // is align-16 but tuple slots are only 8-byte aligned.
+  llvm::LoadInst* CreateLoad(llvm::Type* ty, llvm::Value* ptr,
+      const ColumnType& col_type, const llvm::Twine& name = "") {
+    auto* load = llvm::IRBuilder<>::CreateLoad(ty, ptr, name);
+    if (col_type.type == TYPE_DECIMAL && col_type.GetByteSize() == 16)
+      load->setAlignment(llvm::Align(8));
+    return load;
+  }
+  llvm::StoreInst* CreateStore(llvm::Value* val, llvm::Value* ptr,
+      const ColumnType& col_type) {
+    auto* store = llvm::IRBuilder<>::CreateStore(val, ptr);
+    if (col_type.type == TYPE_DECIMAL && col_type.GetByteSize() == 16)
+      store->setAlignment(llvm::Align(8));
+    return store;
+  }
 };
 
 /// LLVM code generator.  This is the top level object to generate jitted code.
