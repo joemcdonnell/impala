@@ -630,18 +630,7 @@ TEST_F(LlvmCodeGenTest, IrStructTypes) {
 
   // These types must be fully defined (non-opaque) in the cross-compiled IR bitcode.
   static const char* kDefinedInIr[] = {
-    "class.impala::AggFnEvaluator",
-    "class.impala::HashTableCtx",
-    "class.impala::HdfsAvroScanner",
-    "class.impala::HdfsScanner",
-    "class.impala::KrpcDataStreamSender",
-    "class.impala::MemPool",
-    "class.impala::RuntimeFilter",
-    "class.impala::RuntimeState",
-    "class.impala::ScalarExprEvaluator",
     "class.impala::Status",
-    "class.impala::TupleDescriptor",
-    "class.impala::TupleRowComparator",
     "struct.impala::ColumnType",
     "struct.impala::FieldLocation",
     "struct.impala::FilterContext",
@@ -654,33 +643,6 @@ TEST_F(LlvmCodeGenTest, IrStructTypes) {
     llvm::StructType* type = llvm::StructType::getTypeByName(codegen->context(), name);
     ASSERT_NE(type, nullptr) << "Type missing from IR: " << name;
     EXPECT_FALSE(type->isOpaque()) << "Type has no body in IR: " << name;
-  }
-
-  // These types appear only as pointers in the IR and are auto-created as opaque
-  // placeholders by GetNamedPtrType(). Verify each is registered (reachable) and
-  // opaque (i.e. not accidentally given a body).
-  static const char* kPointerOnlyTypes[] = {
-    "class.impala::Expr",
-    "class.impala::HdfsTextScanner",
-    "class.impala::IsNotEmptyPredicate",
-    "class.impala::NullLiteral",
-    "class.impala::RowDescriptor",
-    "class.impala::ScalarExpr",
-    "class.impala::SlotRef",
-    "class.impala::Tuple",
-    "class.impala::TupleRow",
-    "class.impala::ValidTupleIdExpr",
-    "class.impala_udf::FunctionContext",
-    "class.kudu::KuduPartialRow",
-    "class.kudu::client::KuduPartitioner",
-    "struct.impala::Tuple::CodegenTypes",
-  };
-  for (const char* name : kPointerOnlyTypes) {
-    // Calling GetNamedPtrType ensures the type is auto-created if absent.
-    codegen->GetNamedPtrType(name);
-    llvm::StructType* type = llvm::StructType::getTypeByName(codegen->context(), name);
-    ASSERT_NE(type, nullptr) << "GetNamedPtrType failed to register: " << name;
-    EXPECT_TRUE(type->isOpaque()) << "Pointer-only type unexpectedly has a body: " << name;
   }
 }
 

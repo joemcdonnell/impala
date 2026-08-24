@@ -260,12 +260,6 @@ class LlvmCodeGen {
   /// Return a pointer type to 'type'
   llvm::PointerType* GetPtrType(llvm::Type* type);
 
-  /// Return a pointer to pointer type to 'type'.
-  llvm::PointerType* GetPtrPtrType(llvm::Type* type);
-
-  /// Return a pointer to pointer type for 'name' type.
-  llvm::PointerType* GetNamedPtrPtrType(const std::string& name);
-
   /// Returns llvm type for Impala's internal representation of this column type,
   /// i.e. the way Impala represents this type in a Tuple.
   llvm::Type* GetSlotType(const ColumnType& type);
@@ -292,12 +286,10 @@ class LlvmCodeGen {
   }
 
   template<class T>
-  llvm::PointerType* GetStructPtrType() { return GetNamedPtrType(T::LLVM_CLASS_NAME); }
+  llvm::PointerType* GetStructPtrType() { return ptr_type_; }
 
   template<class T>
-  llvm::PointerType* GetStructPtrPtrType() {
-    return GetNamedPtrPtrType(T::LLVM_CLASS_NAME);
-  }
+  llvm::PointerType* GetStructPtrPtrType() { return ptr_type_; }
 
   /// Alloca's an instance of the appropriate pointer type and sets it to point at 'v'
   llvm::Value* GetPtrTo(LlvmBuilder* builder, llvm::Value* v, const char* name = "");
@@ -560,13 +552,13 @@ class LlvmCodeGen {
   llvm::PointerType* ptr_type() { return ptr_type_; }
   llvm::Type* void_type() { return void_type_; }
 
-  llvm::PointerType* i8_ptr_type() { return GetPtrType(i8_type()); }
-  llvm::PointerType* i16_ptr_type() { return GetPtrType(i16_type()); }
-  llvm::PointerType* i32_ptr_type() { return GetPtrType(i32_type()); }
-  llvm::PointerType* i64_ptr_type() { return GetPtrType(i64_type()); }
-  llvm::PointerType* float_ptr_type() { return GetPtrType(float_type()); }
-  llvm::PointerType* double_ptr_type() { return GetPtrType(double_type()); }
-  llvm::PointerType* ptr_ptr_type() { return GetPtrType(ptr_type_); }
+  llvm::PointerType* i8_ptr_type() { return ptr_type_; }
+  llvm::PointerType* i16_ptr_type() { return ptr_type_; }
+  llvm::PointerType* i32_ptr_type() { return ptr_type_; }
+  llvm::PointerType* i64_ptr_type() { return ptr_type_; }
+  llvm::PointerType* float_ptr_type() { return ptr_type_; }
+  llvm::PointerType* double_ptr_type() { return ptr_type_; }
+  llvm::PointerType* ptr_ptr_type() { return ptr_type_; }
 
   llvm::Constant* GetBoolConstant(bool val) { return val ? true_value_ : false_value_; }
   llvm::Constant* GetI8Constant(uint64_t val) {

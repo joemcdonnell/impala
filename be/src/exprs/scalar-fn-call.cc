@@ -307,17 +307,9 @@ Status ScalarFnCall::GetCodegendComputeFnImpl(LlvmCodeGen* codegen, llvm::Functi
 
   // First argument is always FunctionContext*.
   // Index into our registered offset in the ScalarFnEvaluator.
-  llvm::StructType* eval_struct = codegen->GetStructType<ScalarExprEvaluator>();
-  llvm::Value* eval_gep = builder.CreateStructGEP(eval_struct, eval, 1, "eval_gep");
-  llvm::Type* eval_gep_type = eval_struct->getElementType(1);
-  llvm::Value* fn_ctxs_base =
-      builder.CreateLoad(eval_gep_type, eval_gep, "fn_ctxs_base");
-  // Use GEP to add our index to the base pointer
-  llvm::Type* fn_ctx_type =
-      codegen->GetNamedPtrType("class.impala_udf::FunctionContext");
-  llvm::Value* fn_ctx_ptr =
-      builder.CreateConstGEP1_32(fn_ctx_type, fn_ctxs_base, fn_ctx_idx_, "fn_ctx_ptr");
-  llvm::Value* fn_ctx = builder.CreateLoad(fn_ctx_type, fn_ctx_ptr, "fn_ctx");
+  llvm::Function* get_fn_ctx_fn = codegen->GetFunction(IRFunction::GET_FUNCTION_CTX, false);
+  llvm::Value* fn_ctx = builder.CreateCall(
+      get_fn_ctx_fn, {eval, codegen->GetI32Constant(fn_ctx_idx_)}, "fn_ctx");
   udf_args.push_back(fn_ctx);
 
   // Allocate a varargs array. The array's entry type is the appropriate AnyVal subclass.
