@@ -55,7 +55,7 @@ class CodegenAnyValReadWriteInfo;
 /// TYPE_STRUCT/StructVal: { i64, i8* }
 /// TYPE_TIMESTAMP/TimestampVal: { i64, i64 }
 /// TYPE_DECIMAL/DecimalVal (isn't lowered):
-/// %"struct.impala_udf::DecimalVal" { {i8}, [15 x i8], {i128} }
+/// %"struct.impala_udf::DecimalVal" { {i8}, {i128} }
 /// TYPE_DATE/DateVal: i64
 //
 /// TODO:
