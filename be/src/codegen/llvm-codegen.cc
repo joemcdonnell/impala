@@ -64,6 +64,7 @@
 #include "codegen/mcjit-mem-mgr.h"
 #include "common/logging.h"
 #include "exprs/anyval-util.h"
+#include "exec/filter-context.h"
 #include "gutil/sysinfo.h"
 #include "impala-ir/impala-ir-names.h"
 #include "runtime/collection-value.h"
@@ -438,8 +439,30 @@ Status LlvmCodeGen::CreateImpalaCodegen(FragmentState* state,
   // Get type for TimestampValue
   codegen->timestamp_value_type_ = codegen->GetStructType<TimestampValue>();
 
-  // Get type for CollectionValue
-  codegen->collection_value_type_ = codegen->GetStructType<CollectionValue>();
+  // Get type for CollectionValue. Under LLVM 19 opaque pointers it may not be emitted
+  // as a named type when only accessed via pointer; create it from its known layout.
+  // Field layout mirrors what CodegenReadingStringOrCollectionVal uses: { ptr, i32 }.
+  {
+    llvm::StructType* cv = llvm::StructType::getTypeByName(
+        codegen->context(), CollectionValue::LLVM_CLASS_NAME);
+    if (cv == nullptr) {
+      cv = llvm::StructType::create(codegen->context(),
+          {llvm::PointerType::getUnqual(codegen->context()), codegen->i32_type()},
+          CollectionValue::LLVM_CLASS_NAME, /*isPacked=*/true);
+    }
+    codegen->collection_value_type_ = cv;
+  }
+
+  // Create FilterContext type if absent. It has 6 pointer fields:
+  // { ScalarExprEvaluator*, RuntimeFilter*, FilterStats*, BloomFilter*,
+  //   MinMaxFilter*, InListFilter* }
+  // Field indices match those used in filter-context.cc CodegenEval/CodegenInsert.
+  if (llvm::StructType::getTypeByName(
+          codegen->context(), FilterContext::LLVM_CLASS_NAME) == nullptr) {
+    llvm::Type* ptr = llvm::PointerType::getUnqual(codegen->context());
+    llvm::StructType::create(codegen->context(),
+        {ptr, ptr, ptr, ptr, ptr, ptr}, FilterContext::LLVM_CLASS_NAME);
+  }
 
   // Verify size is correct
   const llvm::DataLayout& data_layout = codegen->execution_engine()->getDataLayout();
@@ -616,7 +639,7 @@ llvm::Type* LlvmCodeGen::GetSlotType(const ColumnType& type) {
 }
 
 llvm::PointerType* LlvmCodeGen::GetSlotPtrType(const ColumnType& type) {
-  return llvm::PointerType::getUnqual(context());
+  return ptr_type_;
 }
 
 llvm::Type* LlvmCodeGen::GetNamedType(const string& name) {
@@ -626,23 +649,11 @@ llvm::Type* LlvmCodeGen::GetNamedType(const string& name) {
 }
 
 llvm::PointerType* LlvmCodeGen::GetNamedPtrType(const string& name) {
-  // Auto-register an opaque placeholder for types used only as pointers in the IR.
-  if (llvm::StructType::getTypeByName(context(), name) == nullptr) {
-    llvm::StructType::create(context(), name);
-  }
-  return llvm::PointerType::getUnqual(context());
+  return ptr_type_;
 }
 
 llvm::PointerType* LlvmCodeGen::GetPtrType(llvm::Type* type) {
-  return llvm::PointerType::getUnqual(context());
-}
-
-llvm::PointerType* LlvmCodeGen::GetPtrPtrType(llvm::Type* type) {
-  return llvm::PointerType::getUnqual(context());
-}
-
-llvm::PointerType* LlvmCodeGen::GetNamedPtrPtrType(const string& name) {
-  return llvm::PointerType::getUnqual(context());
+  return ptr_type_;
 }
 
 llvm::Constant* LlvmCodeGen::GetIntConstant(
@@ -661,8 +672,8 @@ llvm::Value* LlvmCodeGen::GetStringConstant(
       llvm::ConstantDataArray::getString(context(), llvm::StringRef(data, len), false);
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(*module_, const_string->getType(),
       true, llvm::GlobalValue::PrivateLinkage, const_string);
-  // Get a pointer to the first element of the string.
-  return builder->CreateConstInBoundsGEP2_32(const_string->getType(), gv, 0, 0, "");
+  // With opaque pointers gv is already ptr to the first byte.
+  return gv;
 }
 
 llvm::AllocaInst* LlvmCodeGen::CreateEntryBlockAlloca(
@@ -1758,10 +1769,9 @@ void LlvmCodeGen::CodegenMemset(
 
 void LlvmCodeGen::CodegenClearNullBits(
     LlvmBuilder* builder, llvm::Value* tuple_ptr, const TupleDescriptor& tuple_desc) {
-  llvm::Value* int8_ptr = builder->CreateBitCast(tuple_ptr, ptr_type(), "int8_ptr");
   llvm::Value* null_bytes_offset = GetI32Constant(tuple_desc.null_bytes_offset());
   llvm::Value* null_bytes_ptr =
-    builder->CreateInBoundsGEP(i8_type(), int8_ptr, null_bytes_offset, "null_bytes_ptr");
+    builder->CreateInBoundsGEP(i8_type(), tuple_ptr, null_bytes_offset, "null_bytes_ptr");
   CodegenMemset(builder, null_bytes_ptr, 0, tuple_desc.num_null_bytes());
 }
 
@@ -1806,22 +1816,20 @@ void LlvmCodeGen::ClearHashFns() {
 //   2. crc16 (for bytes 9, 10)
 //   3. crc8 (for byte 11)
 // The resulting IR looks like:
-// define i32 @CrcHash11(i8* %data, i32 %len, i32 %seed) {
+// define i32 @CrcHash11(ptr %data, i32 %len, i32 %seed) {
 // entry:
 //   %0 = zext i32 %seed to i64
-//   %1 = bitcast i8* %data to i64*
-//   %2 = getelementptr i64* %1, i32 0
-//   %3 = load i64* %2
-//   %4 = call i64 @llvm.x86.sse42.crc32.64.64(i64 %0, i64 %3)
-//   %5 = trunc i64 %4 to i32
-//   %6 = getelementptr i8* %data, i32 8
-//   %7 = bitcast i8* %6 to i16*
-//   %8 = load i16* %7
-//   %9 = call i32 @llvm.x86.sse42.crc32.32.16(i32 %5, i16 %8)
-//   %10 = getelementptr i8* %6, i32 2
-//   %11 = load i8* %10
-//   %12 = call i32 @llvm.x86.sse42.crc32.32.8(i32 %9, i8 %11)
-//   ret i32 %12
+//   %1 = getelementptr i64, ptr %data, i32 0
+//   %2 = load i64, ptr %1
+//   %3 = call i64 @llvm.x86.sse42.crc32.64.64(i64 %0, i64 %2)
+//   %4 = trunc i64 %3 to i32
+//   %5 = getelementptr i8, ptr %data, i32 8
+//   %6 = load i16, ptr %5
+//   %7 = call i32 @llvm.x86.sse42.crc32.32.16(i32 %4, i16 %6)
+//   %8 = getelementptr i8, ptr %5, i32 2
+//   %9 = load i8, ptr %8
+//   %10 = call i32 @llvm.x86.sse42.crc32.32.8(i32 %7, i8 %9)
+//   ret i32 %10
 // }
 llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
   if (IS_AARCH64 || IsCPUFeatureEnabled(CpuInfo::SSE4_2)) {
@@ -1870,12 +1878,11 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
 #ifndef __aarch64__
       llvm::Value* result_64 = builder.CreateZExt(result, i64_type());
 #endif
-      llvm::Value* ptr = builder.CreateBitCast(data, i64_ptr_type());
       int i = 0;
       while (num_bytes >= 8) {
         llvm::Value* index[] = {GetI32Constant(i++)};
         llvm::Value* d = builder.CreateLoad(i64_type(),
-            builder.CreateInBoundsGEP(i64_type(), ptr, index));
+            builder.CreateInBoundsGEP(i64_type(), data, index));
 #ifdef __aarch64__
         result = builder.CreateCall(crc64_fn, llvm::ArrayRef<llvm::Value*>({result, d}));
 #else
@@ -1894,8 +1901,7 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
 
     if (num_bytes >= 4) {
       DCHECK_LT(num_bytes, 8);
-      llvm::Value* ptr = builder.CreateBitCast(data, i32_ptr_type());
-      llvm::Value* d = builder.CreateLoad(i32_type(), ptr);
+      llvm::Value* d = builder.CreateLoad(i32_type(), data);
       result = builder.CreateCall(crc32_fn, llvm::ArrayRef<llvm::Value*>({result, d}));
       llvm::Value* index[] = {GetI32Constant(4)};
       data = builder.CreateInBoundsGEP(i8_type(), data, index);
@@ -1904,8 +1910,7 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
 
     if (num_bytes >= 2) {
       DCHECK_LT(num_bytes, 4);
-      llvm::Value* ptr = builder.CreateBitCast(data, i16_ptr_type());
-      llvm::Value* d = builder.CreateLoad(i16_type(), ptr);
+      llvm::Value* d = builder.CreateLoad(i16_type(), data);
 #ifdef __aarch64__
       d = builder.CreateZExt(d, i32_type());
 #endif
@@ -1978,8 +1983,7 @@ llvm::Constant* LlvmCodeGen::ConstantToGVPtr(
     llvm::Type* type, llvm::Constant* ir_constant, const string& name) {
   llvm::GlobalVariable* gv = new llvm::GlobalVariable(
       *module_, type, true, llvm::GlobalValue::PrivateLinkage, ir_constant, name);
-  return llvm::ConstantExpr::getGetElementPtr(
-      type, gv, llvm::ArrayRef<llvm::Constant*>({GetI32Constant(0)}));
+  return gv;
 }
 
 llvm::Constant* LlvmCodeGen::ConstantsToGVArrayPtr(llvm::Type* element_type,
