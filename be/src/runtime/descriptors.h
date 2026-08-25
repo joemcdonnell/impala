@@ -325,16 +325,18 @@ class SlotDescriptor {
   // too.
   void CodegenWriteCollectionIterateOverChildren(LlvmCodeGen* codegen,
       LlvmBuilder* builder, llvm::Value* master_tuple, llvm::Value* children_tuple,
+      llvm::Type* children_type, llvm::Function* fn,
+      const NonWritableBasicBlock& insert_before, llvm::Value* pool_val) const;
+
+  void CodegenWriteCollectionStructChild(LlvmCodeGen* codegen, LlvmBuilder* builder,
+      llvm::Value* master_tuple, llvm::Value* tuple, llvm::Type* tuple_type,
       llvm::Function* fn, const NonWritableBasicBlock& insert_before,
       llvm::Value* pool_val) const;
 
-  void CodegenWriteCollectionStructChild(LlvmCodeGen* codegen, LlvmBuilder* builder,
-      llvm::Value* master_tuple, llvm::Value* tuple, llvm::Function* fn,
-      const NonWritableBasicBlock& insert_before, llvm::Value* pool_val) const;
-
   void CodegenWriteCollectionVarlenChild(LlvmCodeGen* codegen, LlvmBuilder* builder,
-      llvm::Value* master_tuple, llvm::Value* child_tuple, llvm::Function* fn,
-      const NonWritableBasicBlock& insert_before, llvm::Value* pool_val) const;
+      llvm::Value* master_tuple, llvm::Value* child_tuple, llvm::Type* children_type,
+      llvm::Function* fn, const NonWritableBasicBlock& insert_before,
+      llvm::Value* pool_val) const;
 
   static llvm::Value* CodegenToTimestampValue(
       const CodegenAnyValReadWriteInfo& read_write_info);
