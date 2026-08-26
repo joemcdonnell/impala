@@ -1715,10 +1715,10 @@ Status LlvmCodeGen::LoadIntrinsics() {
     const char* error;
   } non_overloaded_intrinsics[] = {
 #ifdef __aarch64__
-      {llvm::Intrinsic::aarch64_crc32cb, "aarch64 crc32_u8"},
-      {llvm::Intrinsic::aarch64_crc32ch, "aarch64 crc32_u16"},
-      {llvm::Intrinsic::aarch64_crc32cw, "aarch64 crc32_u32"},
-      {llvm::Intrinsic::aarch64_crc32cx, "aarch64 crc32_u64"},
+      {llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cb, "aarch64 crc32_u8"},
+      {llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32ch, "aarch64 crc32_u16"},
+      {llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cw, "aarch64 crc32_u32"},
+      {llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cx, "aarch64 crc32_u64"},
 #else
       {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_8, "sse4.2 crc32_u8"},
       {llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_16, "sse4.2 crc32_u16"},
@@ -1859,10 +1859,10 @@ llvm::Function* LlvmCodeGen::GetHashFunction(int num_bytes) {
     llvm::Value* data = args[0];
     llvm::Value* result = args[2];
 #ifdef __aarch64__
-    llvm::Function* crc8_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32cb];
-    llvm::Function* crc16_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32ch];
-    llvm::Function* crc32_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32cw];
-    llvm::Function* crc64_fn = llvm_intrinsics_[llvm::Intrinsic::aarch64_crc32cx];
+    llvm::Function* crc8_fn = llvm_intrinsics_[llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cb];
+    llvm::Function* crc16_fn = llvm_intrinsics_[llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32ch];
+    llvm::Function* crc32_fn = llvm_intrinsics_[llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cw];
+    llvm::Function* crc64_fn = llvm_intrinsics_[llvm::Intrinsic::AARCH64Intrinsics::aarch64_crc32cx];
 #else
     llvm::Function* crc8_fn =
         llvm_intrinsics_[llvm::Intrinsic::X86Intrinsics::x86_sse42_crc32_32_8];
