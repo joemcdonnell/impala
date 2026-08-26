@@ -37,6 +37,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/InstIterator.h>
+#include <llvm/IR/IntrinsicsAArch64.h>
 #include <llvm/IR/IntrinsicsX86.h>
 #include <llvm/IR/NoFolder.h>
 #include <llvm/IR/Verifier.h>
