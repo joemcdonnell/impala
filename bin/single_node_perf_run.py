@@ -280,16 +280,27 @@ def get_git_output(args):
   return subprocess.check_output(["git"] + args, text=True, env={})
 
 
-def load_data(db_to_load, table_formats, scale):
+def load_data(workload, table_formats, scale, options):
   """Loads a database with a particular scale factor."""
-  all_formats = ("text/none," + table_formats if "text/none" not in table_formats
-                 else table_formats)
-  configured_call(["{0}/bin/load-data.py".format(IMPALA_HOME),
-                   "--workloads", db_to_load, "--scale_factor", str(scale),
-                   "--table_formats", all_formats])
+  if options.custom_dataload_script:
+    dataload_script = options.custom_dataload_script
+    # This doesn't add text/none to the list when using the custom dataload
+    # script, because it may not be necessary and the custom dataload script
+    # needs to handle any dependencies itself. Arguably, bin/load-data.py
+    # should do the same.
+    all_formats = table_formats
+  else:
+    dataload_script = "{0}/bin/load-data.py".format(IMPALA_HOME)
+    all_formats = ("text/none," + table_formats if "text/none" not in table_formats
+                   else table_formats)
+
+  configured_call([dataload_script, "--workloads", workload,
+                   "--scale_factor", str(scale), "--table_formats", all_formats])
+  # We could require the custom dataload script to do this itself, but for now
+  # it seems basically fine to compute stats.
   for table_format in table_formats.split(","):
     suffix = TableFormatInfo.create_from_string(None, table_format).db_suffix()
-    db_name = db_to_load + scale + suffix
+    db_name = workload + scale + suffix
     configured_call(["{0}/tests/util/compute_table_stats.py".format(IMPALA_HOME),
                      "--stop_on_error", "--db_names", db_name,
                      "--parallelism", "1"])
@@ -655,7 +666,7 @@ def perf_ab_test(options, args):
 
   workloads = options.workloads.split(",")
 
-  if options.load:
+  if options.load or options.custom_dataload_script:
     WORKLOAD_TO_DATASET = {
       "tpch": "tpch",
       "tpcds": "tpcds",
@@ -664,11 +675,12 @@ def perf_ab_test(options, args):
       "tpcds_partitioned": "tpcds_partitioned"
     }
     datasets = [WORKLOAD_TO_DATASET[workload] for workload in workloads]
-    if "tpcds_partitioned" in datasets and "tpcds" not in datasets:
+    if "tpcds_partitioned" in datasets and "tpcds" not in datasets and \
+       not options.custom_dataload_script:
       # "tpcds_partitioned" require the text "tpcds" database.
-      load_data("tpcds", "text/none", options.scale)
+      load_data("tpcds", "text/none", options.scale, options)
     for dataset in datasets:
-      load_data(dataset, options.table_formats, options.scale)
+      load_data(dataset, options.table_formats, options.scale, options)
 
   workloads = ",".join(["{0}:{1}".format(workload, options.scale)
                         for workload in workloads])
@@ -745,6 +757,11 @@ def parse_options():
                     dest="disable_hyperthreading", help=("Map Impalads to only one of "
                       "the two hyperthreads when using cgroup cpusets. This does not do "
                       "anything on non-hyperthreaded systems."))
+  parser.add_option("--custom_dataload_script", dest="custom_dataload_script",
+                    help=("Custom dataload script to use rather than bin/load-data.py. "
+                      "Called with the same arguments as bin/load-data.py "
+                      "(workloads,scale_factor,table_formats specified as "
+                      "--key value commandline arguments)."))
 
   parser.set_usage(textwrap.dedent("""
     single_node_perf_run.py [options] git_hash_A [git_hash_B]
