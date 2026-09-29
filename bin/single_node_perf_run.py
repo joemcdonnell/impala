@@ -267,7 +267,9 @@ def configured_call(cmd):
   # complicated interactions. For example, this script runs with impala-python3,
   # which sets LD_LIBRARY_PATH to use the toolchain libstdc++. On newer OSes, this
   # can cause issues for system binaries that need to use a newer libstdc++.
-  return subprocess.check_call(["bash", "-c", cmd], env={})
+  pathonlyenv={}
+  pathonlyenv["PATH"] = os.environ["PATH"]
+  return subprocess.check_call(["bash", "-c", cmd], env=pathonlyenv)
 
 
 def run_git(args):
