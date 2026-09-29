@@ -42,6 +42,12 @@ if [[ $RET_CODE == 0 ]]; then
   fi
 fi
 
+if [[ -n "${CUSTOM_DATALOAD_SCRIPT}" ]]; then
+  DATALOAD_SCRIPT_OPTION="--custom_dataload_script ${CUSTOM_DATALOAD_SCRIPT}"
+else
+  DATALOAD_SCRIPT_OPTION="--load"
+fi
+
 # Build the runner script, systemd service, and reload the daemon.
 # This does not start the service.
 function create_systemd_service {
@@ -60,7 +66,8 @@ exec bin/single_node_perf_run.py --iterations "${ITERATIONS}" \
   --workload "${WORKLOAD}" --num_impalads "${NUM_IMPALADS}" \
   --query_names "$QUERY_NAMES" --load --start_minicluster \
   --impalad_args '$IMPALAD_ARGS' "${HASH_A}" "${HASH_B}" \
-  --cpus_per_impalad ${CPUS_PER_IMPALAD} --use_cgroup_cpusets
+  --cpus_per_impalad ${CPUS_PER_IMPALAD} --use_cgroup_cpusets \
+  ${DATALOAD_SCRIPT_OPTION}
 EOF
 
   chmod +x perf-ab-test-runner.sh
