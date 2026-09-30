@@ -42,10 +42,20 @@ if [[ $RET_CODE == 0 ]]; then
   fi
 fi
 
+# Define optional variables
+: ${CUSTOM_DATALOAD_SCRIPT:=}
+: ${START_IMPALA_CLUSTER_ARGS:=}
+
 if [[ -n "${CUSTOM_DATALOAD_SCRIPT}" ]]; then
-  DATALOAD_SCRIPT_OPTION="--custom_dataload_script ${CUSTOM_DATALOAD_SCRIPT}"
+  DATALOAD_ARGS="--custom_dataload_script ${CUSTOM_DATALOAD_SCRIPT}"
 else
-  DATALOAD_SCRIPT_OPTION="--load"
+  DATALOAD_ARGS="--load"
+fi
+
+if [[ -n "${START_IMPALA_CLUSTER_ARGS}" ]]; then
+  START_IMPALA_CLUSTER_ARGS="--start_impala_cluster_args='${START_IMPALA_CLUSTER_ARGS}'"
+else
+  START_IMPALA_CLUSTER_ARGS=""
 fi
 
 # Build the runner script, systemd service, and reload the daemon.
@@ -67,7 +77,7 @@ exec bin/single_node_perf_run.py --iterations "${ITERATIONS}" \
   --query_names "$QUERY_NAMES" --load --start_minicluster \
   --impalad_args '$IMPALAD_ARGS' "${HASH_A}" "${HASH_B}" \
   --cpus_per_impalad ${CPUS_PER_IMPALAD} --use_cgroup_cpusets \
-  ${DATALOAD_SCRIPT_OPTION}
+  ${DATALOAD_ARGS} ${START_IMPALA_CLUSTER_ARGS}
 EOF
 
   chmod +x perf-ab-test-runner.sh
