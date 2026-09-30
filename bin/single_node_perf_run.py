@@ -267,7 +267,7 @@ def configured_call(cmd):
   # complicated interactions. For example, this script runs with impala-python3,
   # which sets LD_LIBRARY_PATH to use the toolchain libstdc++. On newer OSes, this
   # can cause issues for system binaries that need to use a newer libstdc++.
-  pathonlyenv={}
+  pathonlyenv = {}
   pathonlyenv["PATH"] = os.environ["PATH"]
   return subprocess.check_call(["bash", "-c", cmd], env=pathonlyenv)
 
@@ -335,12 +335,15 @@ def stop_minicluster():
 
 
 def start_impala(num_impalads, options, cgroup_handler):
+  start_impala_cluster_cmd = ["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME)]
+  start_impala_cluster_cmd.extend(["-s", str(num_impalads), "-c", str(num_impalads)])
+  start_impala_cluster_cmd.extend(options.start_impala_cluster_args)
+  for arg in options.impalad_args:
+    start_impala_cluster_cmd.append("--impalad_args={0}".format(arg))
   # We want the non-impalad daemons like statestored/catalogd in the "other" group,
   # so switch in before starting, then switch back to "admin".
   put_pid_in_cgroup(cgroup_handler, os.getpid(), "other")
-  configured_call(["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME), "-s",
-                   str(num_impalads), "-c", str(num_impalads)]
-                  + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
+  configured_call(start_impala_cluster_cmd)
   put_pid_in_cgroup(cgroup_handler, os.getpid(), "admin")
   if cgroup_handler:
     # Get the Impalad pids
@@ -764,6 +767,10 @@ def parse_options():
                       "Called with the same arguments as bin/load-data.py "
                       "(workloads,scale_factor,table_formats specified as "
                       "--key value commandline arguments)."))
+  parser.add_option("--start_impala_cluster_args", dest="start_impala_cluster_args",
+                    default=[], action="append", type="string",
+                    help=("Additional arguments to pass to bin/start-impala-cluster.py. "
+                          "--impalad_args takes precedence and can override this."))
 
   parser.set_usage(textwrap.dedent("""
     single_node_perf_run.py [options] git_hash_A [git_hash_B]
