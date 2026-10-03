@@ -410,7 +410,7 @@ def report_benchmark_results(file_a, file_b, description):
     f.write(performance_result)
 
 
-def compare(base_dir, hash_a, hash_b, options):
+def compare(base_dir, hash_a, hash_b):
   """Take the results of two performance runs and compare them."""
   file_a = os.path.join(base_dir, hash_a + ".json")
   file_b = os.path.join(base_dir, hash_b + ".json")
@@ -418,35 +418,12 @@ def compare(base_dir, hash_a, hash_b, options):
   report_benchmark_results(file_a, file_b, description)
 
   # From the two json files extract the profiles and diff them
-  if options.split_profiles:
-    generate_profile_files(file_a, hash_a, base_dir)
-    generate_profile_files(file_b, hash_b, base_dir)
-    with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
-      # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profiles"),
-        os.path.join(base_dir, hash_b + "_profiles")], stdout=f, text=True, env={})
-  else:
-    generate_profile_file(file_a, hash_a, base_dir)
-    generate_profile_file(file_b, hash_b, base_dir)
-    with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
-      # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profile.txt"),
-        os.path.join(base_dir, hash_b + "_profile.txt")], stdout=f, text=True, env={})
-
-
-def generate_profile_file(name, hash, base_dir):
-  """Extracts runtime profiles from the JSON file 'name'.
-
-  Writes the runtime profiles back in a simple text file in the same directory.
-  """
-  with open(name, 'rb') as fid:
-    data = json.loads(fid.read().decode("utf-8", "ignore"))
-    with open(os.path.join(base_dir, hash + "_profile.txt"), "w+") as out:
-      # For each query
-      for key in data:
-        for iteration in data[key]:
-          out.write(iteration["runtime_profile"])
-          out.write("\n\n")
+  generate_profile_files(file_a, hash_a, base_dir)
+  generate_profile_files(file_b, hash_b, base_dir)
+  with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
+    # This does not check that the diff command succeeds
+    subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profiles"),
+      os.path.join(base_dir, hash_b + "_profiles")], stdout=f, text=True, env={})
 
 
 def generate_profile_files(name, hash, base_dir):
@@ -705,7 +682,7 @@ def perf_ab_test(options, args):
     restore_workloads(workload_dir)
     start_impala(options.num_impalads, options, cgroup_handler)
     run_workload(temp_dir, workloads, options)
-    compare(temp_dir, hash_a, hash_b, options)
+    compare(temp_dir, hash_a, hash_b)
 
   stop_impala()
   # If we started the minicluster, shut it off at the end
@@ -743,12 +720,6 @@ def parse_options():
   parser.add_option("--impalad_args", dest="impalad_args", action="append", type="string",
                     default=[],
                     help="Additional arguments to pass to each Impalad during startup")
-  parser.add_option("--split_profiles", action="store_true", dest="split_profiles",
-                    default=True, help=("If specified, query profiles will be generated "
-                      "as separate files"))
-  parser.add_option("--no_split_profiles", action="store_false", dest="split_profiles",
-                    help=("If specified, query profiles will be generated as a "
-                      "single-combined file"))
   parser.add_option("--exec_options", dest="exec_options",
                     help=("Query exec option string to run workload (formatted as "
                       "'opt1:val1;opt2:val2')"))
