@@ -236,6 +236,14 @@ parser.add_option("--trusted_jar_paths", dest="trusted_jar_paths",
                        "catalogd. Defaults to the test-warehouse data-sources directory "
                        "under the active FILESYSTEM_PREFIX. Pass an empty string to "
                        "disable jar loading entirely.")
+parser.add_option("--scratch_dirs", dest="scratch_dirs", type="string",
+                  help=("Specifies base directories and configuration for the scratch "
+                        "directories. It follows the pattern of the --scratch_dirs "
+                        "startup flag, except that the directory specified is treated "
+                        "as a base directory and each impalad is given a subdirectory "
+                        "underneath. For example, '/data0:50GB,/data1:50GB' would give "
+                        "the Nth impalad a scratch_dirs of "
+                        "'/data0/impala-scratch-N:50GB,/data1/impala-scratch-N:50GB'"))
 
 # For testing: list of comma-separated delays, in milliseconds, that delay impalad catalog
 # replica initialization. The ith delay is applied to the ith impalad.
@@ -727,6 +735,27 @@ def build_impalad_arg_lists(cluster_size, num_coordinators, use_exclusive_coordi
           tuple_cache_debug_dump_path_arg = DATA_CACHE_CONTAINER_PATH
         args = "-tuple_cache_debug_dump_dir={dir} {args}".format(
             dir=tuple_cache_debug_dump_path_arg, args=args)
+
+    if options.scratch_dirs:
+      # This can be a comma-separate list of directories + capacity/priority of the form:
+      # /dir1:10G:0,/dir2:5GB:1,/dir3::1
+      # This lines up with the --scratch_dirs parameter, except that the directory
+      # is a base directory that we need to expand into per-impalad directories
+      expanded_scratch_dir_specs = []
+      for scratch_dir_spec in options.scratch_dirs.split(","):
+        # Each entry is a directory optionally followed by :size and :priority
+        # Pull out the dir and use it as a base directory for the impalad-specific dir
+        split_scratch_dir_spec = scratch_dir_spec.split(":")
+        base_scratch_dir = split_scratch_dir_spec[0]
+        scratch_dir = os.path.join(base_scratch_dir, "impala-scratch-{0}".format(str(i)))
+        # Try creating the directory if it doesn't exist already. May raise exception.
+        if not os.path.exists(scratch_dir):
+          os.makedirs(scratch_dir)
+        # Replace the base dir with the expanded dir and stitch it back up
+        split_scratch_dir_spec[0] = scratch_dir
+        expanded_scratch_dir_specs.append(":".join(split_scratch_dir_spec))
+      args = "{args} -scratch_dirs={scratch_dirs}".format(
+        args=args, scratch_dirs=",".join(expanded_scratch_dir_specs))
 
     if options.enable_admission_service:
       args = "{args} -admission_service_host={host}".format(
