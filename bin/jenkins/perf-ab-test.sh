@@ -76,7 +76,8 @@ exec bin/single_node_perf_run.py --iterations "${ITERATIONS}" \
   --workload "${WORKLOAD}" --num_impalads "${NUM_IMPALADS}" \
   --query_names "$QUERY_NAMES" --load --start_minicluster \
   --impalad_args '$IMPALAD_ARGS' "${HASH_A}" "${HASH_B}" \
-  --cpus_per_impalad ${CPUS_PER_IMPALAD} --use_cgroup_cpusets \
+  --cpus_per_executor ${CPUS_PER_IMPALAD} --use_cgroup_cpusets \
+  --use_exclusive_coordinators \
   ${DATALOAD_ARGS} ${START_IMPALA_CLUSTER_ARGS}
 EOF
 
