@@ -340,7 +340,8 @@ def start_impala(options, cgroup_handler):
   start_impala_cluster_cmd.extend(["-c", str(options.num_coordinators)])
   if options.use_exclusive_coordinators:
     start_impala_cluster_cmd.append("--use_exclusive_coordinators")
-  start_impala_cluster_cmd.extend(options.start_impala_cluster_args)
+  for arg in options.start_impala_cluster_args:
+    start_impala_cluster_cmd.extend(arg.split(" "))
   for arg in options.impalad_args:
     start_impala_cluster_cmd.append("--impalad_args={0}".format(arg))
   # We want the non-impalad daemons like statestored/catalogd in the "other" group,
