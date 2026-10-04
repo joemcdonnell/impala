@@ -851,13 +851,13 @@ if [ "${TARGET_FILESYSTEM}" = "s3" ]; then
   if [[ "${S3_ACCESS_VALIDATED}" -ne 1 ]]; then
     if ${IMPALA_HOME}/bin/check-s3-access.sh; then
       export S3_ACCESS_VALIDATED=1
-      export DEFAULT_FS="s3a://${S3_BUCKET}"
     else
       return 1
     fi
   else
     echo "S3 access already validated"
   fi
+  export DEFAULT_FS="s3a://${S3_BUCKET}"
   # If using s3guard, verify that the dynamodb table and region are set
   if [[ "${S3GUARD_ENABLED}" = "true" ]]; then
     if [[ -z "${S3GUARD_DYNAMODB_TABLE}" || -z "${S3GUARD_DYNAMODB_REGION}" ]]; then
