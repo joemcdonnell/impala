@@ -55,7 +55,7 @@ class TestDataCache(CustomClusterTestSuite):
   def get_data_cache_metric(self, suffix):
     return self.get_metric('impala-server.io-mgr.remote-data-cache-' + suffix)
 
-  CACHE_START_ARGS = "--data_cache_dir=/tmp --data_cache_size=500MB"
+  CACHE_START_ARGS = "--data_cache_dirs=/tmp --data_cache_size=500MB"
 
   def __test_data_cache_deterministic(self, vector, unique_database):
     """ This test creates a temporary table from another table, overwrites it with
@@ -180,7 +180,7 @@ class TestDataCache(CustomClusterTestSuite):
   @pytest.mark.execute_serially
   @CustomClusterTestSuite.with_args(
       impalad_args=get_impalad_args("LIRS", high_write_concurrency=False),
-      start_args="--data_cache_dir=/tmp --data_cache_size=9MB",
+      start_args="--data_cache_dirs=/tmp --data_cache_size=9MB",
       cluster_size=1)
   def test_data_cache_lirs_instant_evictions(self):
     # The setup for this test is intricate. For Allocate() to succeed, the request

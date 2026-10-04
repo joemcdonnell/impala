@@ -142,9 +142,12 @@ parser.add_option("--docker_auto_ports", dest="docker_auto_ports",
 parser.add_option("--mount_sources", dest="mount_sources", action="store_true",
                   help="Mount the $IMPALA_HOME directory as /opt/impala/sources into "
                        "the containers for easier debugging.")
-parser.add_option("--data_cache_dir", dest="data_cache_dir", default=None,
-                  help="This specifies a base directory in which the IO data cache will "
-                       "use.")
+parser.add_option("--data_cache_dirs", dest="data_cache_dirs", default=None,
+                  help="This specifies base directories for the IO data cache, separated "
+                  "by a comma. This will give each impalad a subdirectory under each "
+                  "base directory. For example, '/data0,/data1' will give impalad N "
+                  " /data0/impala-datacache-N and /data1/impalad-datacache-N. Each "
+                  "location will have a capacity of data_cache_size.")
 parser.add_option("--data_cache_size", dest="data_cache_size", default=0,
                   help="This specifies the maximum storage usage of the IO data cache "
                        "each Impala daemon can use.")
@@ -658,24 +661,31 @@ def build_impalad_arg_lists(cluster_size, num_coordinators, use_exclusive_coordi
           delay=delay_list[i],
           args=args)
 
-    if options.data_cache_dir:
+    if options.data_cache_dirs:
       # create the base directory
-      assert options.data_cache_size != 0, "--data_cache_dir must be used along " \
+      assert options.data_cache_size != 0, "--data_cache_dirs must be used along " \
           "with --data_cache_size"
-      data_cache_path = \
-          os.path.join(options.data_cache_dir, "impala-datacache-{0}".format(str(i)))
-      # Try creating the directory if it doesn't exist already. May raise exception.
-      if not os.path.exists(data_cache_path):
-        os.mkdir(data_cache_path)
-      if options.docker_network is None:
-        data_cache_path_arg = data_cache_path
-      else:
-        # The data cache directory will always be mounted at the same path inside the
-        # container.
-        data_cache_path_arg = DATA_CACHE_CONTAINER_PATH
+      data_cache_dir_list = options.data_cache_dirs.split(",")
+      expanded_data_cache_dirs = []
+      if options.docker_network:
+        assert len(data_cache_dir_list) == 1, "Docker setups only support a single " \
+          "data cache directory"
+      for path in data_cache_dir_list:
+        data_cache_path = \
+            os.path.join(path, "impala-datacache-{0}".format(str(i)))
+        # Try creating the directory if it doesn't exist already. May raise exception.
+        if not os.path.exists(data_cache_path):
+          os.mkdir(data_cache_path)
+        if options.docker_network is None:
+          expanded_data_cache_dirs.append(data_cache_path)
+        else:
+          # The data cache directory will always be mounted at the same path inside the
+          # container.
+          expanded_data_cache_dirs.append(DATA_CACHE_CONTAINER_PATH)
 
-      args = "-data_cache={dir}:{quota} {args}".format(
-          dir=data_cache_path_arg, quota=options.data_cache_size, args=args)
+      args = "-data_cache={dirs}:{quota} {args}".format(
+          dirs=",".join(expanded_data_cache_dirs), quota=options.data_cache_size,
+          args=args)
 
       # Add the eviction policy
       args = "-data_cache_eviction_policy={policy} {args}".format(
@@ -1140,7 +1150,7 @@ class DockerMiniClusterOperations(object):
     will automatically choose the mapping. If there is an existing running or stopped
     container with the same name, it will be destroyed. If provided, mem_limit is
     passed to "docker run" as a string to set the memory limit for the container.
-    If 'supports_data_cache' is true and the data cache is enabled via --data_cache_dir,
+    If 'supports_data_cache' is true and the data cache is enabled via --data_cache_dirs,
     mount the data cache inside the container."""
     self.__destroy_container__(daemon, instance)
     if options.docker_auto_ports:
@@ -1244,8 +1254,11 @@ class DockerMiniClusterOperations(object):
 
     # Create a data cache subdirectory for each daemon and mount at /opt/impala/cache
     # in the container.
-    if options.data_cache_dir and supports_data_cache:
-      data_cache_dir = os.path.join(options.data_cache_dir, host_name + "_cache")
+    if options.data_cache_dirs and supports_data_cache:
+      data_cache_dir_list = options.data_cache_dirs.split(",")
+      assert len(data_cache_dir_list) == 1, "Docker setups only support a single " \
+          "data cache directory"
+      data_cache_dir = os.path.join(data_cache_dir_list[0], host_name + "_cache")
       if not os.path.isdir(data_cache_dir):
         os.makedirs(data_cache_dir)
       mount_args += ["--mount", "type=bind,src={0},dst={1}".format(
