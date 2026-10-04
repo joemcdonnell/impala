@@ -334,9 +334,12 @@ def stop_minicluster():
   configured_call(["{0}/testdata/bin/kill-all.sh".format(IMPALA_HOME)])
 
 
-def start_impala(num_impalads, options, cgroup_handler):
+def start_impala(options, cgroup_handler):
   start_impala_cluster_cmd = ["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME)]
-  start_impala_cluster_cmd.extend(["-s", str(num_impalads), "-c", str(num_impalads)])
+  start_impala_cluster_cmd.extend(["-s", str(options.num_impalads)])
+  start_impala_cluster_cmd.extend(["-c", str(options.num_coordinators)])
+  if options.use_exclusive_coordinators:
+    start_impala_cluster_cmd.append("--use_exclusive_coordinators")
   start_impala_cluster_cmd.extend(options.start_impala_cluster_args)
   for arg in options.impalad_args:
     start_impala_cluster_cmd.append("--impalad_args={0}".format(arg))
@@ -350,13 +353,24 @@ def start_impala(num_impalads, options, cgroup_handler):
     output = subprocess.check_output(["pgrep", "impalad"], text=True)
     impalad_pids = sorted([int(x) for x in output.strip().split("\n")])
     num_found_impalads = len(impalad_pids)
-    if num_found_impalads != num_impalads:
+    if num_found_impalads != options.num_impalads:
       raise Exception("Expected {0} impalads but found {1}".format(
-          num_impalads, num_found_impalads))
-    # The impalad_pids are sorted, and we are putting each pid in its own cgroup.
-    # The first cgroup goes to impalad1, the second to impalad2, and so on.
+          options.num_impalads, num_found_impalads))
+    # The impalad_pids are sorted, and we are putting each executor in its own cgroup.
+    # If there are exclusive coordinators, they are the first C pids and can be ignored.
+    # Beyond that, the first executor goes to executor1, the second to executor2, and
+    # so on.
     for impalad_idx, pid in enumerate(impalad_pids):
-      put_pid_in_cgroup(cgroup_handler, pid, "impalad{0}".format(impalad_idx + 1))
+      if options.use_exclusive_coordinators:
+        # Exclusive coordinators stay in the "other" group
+        if impalad_idx < options.num_coordinators:
+          continue
+        else:
+          executor_idx = impalad_idx + 1 - options.num_coordinators
+      else:
+        executor_idx = impalad_idx + 1
+
+      put_pid_in_cgroup(cgroup_handler, pid, "executor{0}".format(executor_idx))
 
 
 def stop_impala():
@@ -373,7 +387,7 @@ def run_workload(base_dir, workloads, options):
   run_workload = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
 
   impalads = ",".join(["localhost:{0}".format(21050 + i)
-                       for i in range(0, int(options.num_impalads))])
+                       for i in range(0, int(options.num_coordinators))])
 
   run_workload += ["--workloads={0}".format(workloads),
                    "--impalads={0}".format(impalads),
@@ -515,31 +529,35 @@ def get_core_to_cpu_id_map(allowed_cpu_ids):
 
 
 def create_cgroups(options, cgroup_handler):
-  # This sets up num_impalads+2 cgroups. There is a single "admin" group with access
-  # to all the CPUs. Then, there is one per impalad and a catch-all
-  # "other" group for everything else (like the minicluster, etc).
+  # This sets up num_executors+2 cgroups. There is a single "admin" group with access
+  # to all the CPUs. Then, there is one per executor and a catch-all "other" group
+  # for everything else (like the minicluster, exclusive coordinators, etc).
   #
   # Things need to go in this order:
   # 1. Create subgroup(s) and move the main process into a subgroup to avoid
   #    triggering Cgroup V2's no-interior-processes rule
   # 2. Turn on cpusets for the subgroups
   # 3. Set the cpus for each of the subgroups
-  num_impalads = options.num_impalads
+  if options.use_exclusive_coordinators:
+    num_executors = options.num_impalads - options.num_coordinators
+  else:
+    num_executors = options.num_impalads
 
   # 1. Create "admin" subgroup and move into it, then create subgroups for Impalads
   cgroup_handler.create_subgroup("admin")
   cgroup_handler.put_pid_in_cgroup(os.getpid(), "admin")
   cgroup_handler.create_subgroup("other")
-  for impalad_idx in range(num_impalads):
-    cgroup_handler.create_subgroup("impalad{0}".format(impalad_idx + 1))
+  for executor_idx in range(num_executors):
+    cgroup_handler.create_subgroup("executor{0}".format(executor_idx + 1))
 
   # 2. Enable cpusets
   cgroup_handler.enable_cpusets()
 
-  # 3. Set the CPUs for each cgroup. The "admin" cgroup can use all CPUs. Each impalad
-  # gets cpus_per_impalad CPUs assigned, starting from the 0th CPU. The "other" cgroup
-  # is for everything else, and it gets any remaining CPUs.
-  cpus_per_impalad = options.cpus_per_impalad
+  # 3. Set the CPUs for each cgroup. The "admin" cgroup can use all CPUs. Each executor
+  # gets cpus_per_executor CPUs assigned, starting from the 0th CPU. The "other" cgroup
+  # is for everything else (including exclusive coordinators), and it gets any remaining
+  # CPUs.
+  cpus_per_executor = options.cpus_per_executor
   cpu_list = cgroup_handler.get_base_cgroup_cpus()
 
   # Set "admin" to use all CPUs
@@ -550,47 +568,48 @@ def create_cgroups(options, cgroup_handler):
   core_list = list(core_to_cpu_id_map.keys())
   if len(core_list) == len(cpu_list):
     # No hyperthreading
-    cores_per_impalad = cpus_per_impalad
+    cores_per_executor = cpus_per_executor
   else:
     # This should be hyperthreaded. Let's verify that every core has two threads
     for core_id, cpu_id_list in core_to_cpu_id_map.items():
       if len(cpu_id_list) != 2:
         raise Exception("Core id {0} has {1} threads, expected 2. Full info: {2}".format(
             core_id, len(cpu_id_list), core_to_cpu_id_map))
-    if cpus_per_impalad % 2 != 0:
-      raise Exception("cpus_per_impalad is not even and this is a hyperthreaded machine.")
-    cores_per_impalad = int(cpus_per_impalad / 2)
+    if cpus_per_executor % 2 != 0:
+      raise Exception("cpus_per_executor is not even and this CPU is hyperthreaded.")
+    cores_per_executor = int(cpus_per_executor / 2)
 
-  # There needs to be at least one extra CPU once we give each Impalad the specified
-  # number of CPUs
-  requested_cpus = num_impalads * cpus_per_impalad + 1
+  # There needs to be at least one extra CPU once we give each executor the specified
+  # number of CPUs. Given that the coordinator is in the other group, it probably should
+  # be multiple CPUs.
+  requested_cpus = num_executors * cpus_per_executor + 1
   if len(cpu_list) < requested_cpus:
     raise Exception("Provided cpuset cgroup cannot satisfy request for {0} cores".format(
         requested_cpus))
 
-  # Create one cgroup per impalad and assign cpus_per_impalad to it.
+  # Create one cgroup per executor and assign cpus_per_executor to it.
   # We simply slice up the cpu_list.
-  for impalad_idx in range(num_impalads):
-    start_core_idx = impalad_idx * cores_per_impalad
-    end_core_idx = (impalad_idx + 1) * cores_per_impalad
+  for executor_idx in range(num_executors):
+    start_core_idx = executor_idx * cores_per_executor
+    end_core_idx = (executor_idx + 1) * cores_per_executor
     core_slice = core_list[start_core_idx:end_core_idx]
     cpu_slice = []
     for core_id in core_slice:
-      if cores_per_impalad != cpus_per_impalad and options.disable_hyperthreading:
+      if cores_per_executor != cpus_per_executor and options.disable_hyperthreading:
         # Only use the first thread of each core
         cpu_slice.append(core_to_cpu_id_map[core_id][0])
       else:
         cpu_slice.extend(core_to_cpu_id_map[core_id])
     if options.disable_hyperthreading:
-      assert len(cpu_slice) == cores_per_impalad
+      assert len(cpu_slice) == cores_per_executor
     else:
-      assert len(cpu_slice) == cpus_per_impalad
-    print("Handing out cpus {0} to Impala {1}".format(cpu_slice, impalad_idx + 1))
-    cgroup_handler.set_cpu_list("impalad{0}".format(impalad_idx + 1), cpu_slice)
+      assert len(cpu_slice) == cpus_per_executor
+    print("Handing out cpus {0} to executor {1}".format(cpu_slice, executor_idx + 1))
+    cgroup_handler.set_cpu_list("executor{0}".format(executor_idx + 1), cpu_slice)
 
   # Now, we create a other cgroup for all the non-impalad processes
   # This gets all remaining CPUs not used by the impalads
-  remaining_cores = core_list[num_impalads * cores_per_impalad:]
+  remaining_cores = core_list[num_executors * cores_per_executor:]
   remaining_cpus = []
   for core_id in remaining_cores:
     remaining_cpus.extend(core_to_cpu_id_map[core_id])
@@ -644,7 +663,7 @@ def perf_ab_test(options, args):
 
   if options.start_minicluster:
     start_minicluster(cgroup_handler)
-  start_impala(options.num_impalads, options, cgroup_handler)
+  start_impala(options, cgroup_handler)
 
   workloads = options.workloads.split(",")
 
@@ -669,7 +688,7 @@ def perf_ab_test(options, args):
 
   # Restart impala after loading data
   stop_impala()
-  start_impala(options.num_impalads, options, cgroup_handler)
+  start_impala(options, cgroup_handler)
 
   run_workload(temp_dir, workloads, options)
 
@@ -680,7 +699,7 @@ def perf_ab_test(options, args):
     run_git(["checkout", "--", "testdata/workloads"])
     build(hash_b, options)
     restore_workloads(workload_dir)
-    start_impala(options.num_impalads, options, cgroup_handler)
+    start_impala(options, cgroup_handler)
     run_workload(temp_dir, workloads, options)
     compare(temp_dir, hash_a, hash_b)
 
@@ -707,6 +726,12 @@ def parse_options():
                     "list of table formats. Default: parquet/none")
   parser.add_option("--num_impalads", default=1, type="int",
                     help="number of impalads. Default: 1")
+  parser.add_option("--num_coordinators", default=1, type="int", dest="num_coordinators",
+                    help="Number of coordinator")
+  parser.add_option("--use_exclusive_coordinators", action="store_true", default=False,
+                    dest="use_exclusive_coordinators", help="If true, coordinators and "
+                    "executors are separate. The first C impalads are coordinator-only "
+                    "and the remaining N-C are executors.")
   # Less commonly-used options:
   parser.add_option("--query_names",
                     help="comma-separated list of regular expressions. A query is "
@@ -725,10 +750,11 @@ def parse_options():
                       "'opt1:val1;opt2:val2')"))
   parser.add_option("--use_cgroup_cpusets", action="store_true",
                     dest="use_cgroup_cpusets", help=("Use cgroup cpusets to put the "
-                      "impalads and minicluster on separate cores. This requires "
+                      "executors and minicluster on separate cores. This requires "
                       "invoking this script via a systemd service."))
-  parser.add_option("--cpus_per_impalad", dest="cpus_per_impalad", type="int", default=1,
-                    help="The number of cpu cores per Impalad when using cgroup cpusets")
+  parser.add_option("--cpus_per_executor", dest="cpus_per_executor", type="int",
+                    default=1, help=("The number of cpu cores per executor when using "
+                      "cgroup cpusets"))
   parser.add_option("--disable_hyperthreading", action="store_true",
                     dest="disable_hyperthreading", help=("Map Impalads to only one of "
                       "the two hyperthreads when using cgroup cpusets. This does not do "
