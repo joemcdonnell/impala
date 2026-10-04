@@ -34,7 +34,7 @@ if ! bin/bootstrap_system.sh; then
   RET_CODE=1
 fi
 
-source bin/impala-config.sh > /dev/null 2>&1
+source bin/impala-config.sh
 
 if [[ $RET_CODE == 0 ]]; then
   if ! ./buildall.sh -notests -release -format ; then
