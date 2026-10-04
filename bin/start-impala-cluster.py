@@ -244,6 +244,9 @@ parser.add_option("--scratch_dirs", dest="scratch_dirs", type="string",
                         "underneath. For example, '/data0:50GB,/data1:50GB' would give "
                         "the Nth impalad a scratch_dirs of "
                         "'/data0/impala-scratch-N:50GB,/data1/impala-scratch-N:50GB'"))
+parser.add_option("--use_scheduling_seed", dest="use_scheduling_seed", default=False,
+                  action="store_true", help=("Set the --scheduling_seed startup flag "
+                    "so each Impalad has a unique values."))
 
 # For testing: list of comma-separated delays, in milliseconds, that delay impalad catalog
 # replica initialization. The ith delay is applied to the ith impalad.
@@ -756,6 +759,10 @@ def build_impalad_arg_lists(cluster_size, num_coordinators, use_exclusive_coordi
         expanded_scratch_dir_specs.append(":".join(split_scratch_dir_spec))
       args = "{args} -scratch_dirs={scratch_dirs}".format(
         args=args, scratch_dirs=",".join(expanded_scratch_dir_specs))
+
+    if options.use_scheduling_seed:
+      args = "{args} -scheduling_seed=impalad{idx}_of_{num_impalads}".format(
+        args=args, idx=i+1, num_impalads=cluster_size)
 
     if options.enable_admission_service:
       args = "{args} -admission_service_host={host}".format(
