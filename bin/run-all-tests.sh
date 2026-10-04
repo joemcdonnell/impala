@@ -112,7 +112,7 @@ fi
 # Enable data cache if configured.
 if [[ -n "${DATA_CACHE_DIR}" && -n "${DATA_CACHE_SIZE}" ]]; then
    TEST_START_CLUSTER_ARGS="${TEST_START_CLUSTER_ARGS} "`
-       `"--data_cache_dir=${DATA_CACHE_DIR} --data_cache_size=${DATA_CACHE_SIZE} "
+       `"--data_cache_dirs=${DATA_CACHE_DIR} --data_cache_size=${DATA_CACHE_SIZE} "
    if [[ -n "${DATA_CACHE_EVICTION_POLICY}" ]]; then
        TEST_START_CLUSTER_ARGS="${TEST_START_CLUSTER_ARGS} "`
            `"--data_cache_eviction_policy=${DATA_CACHE_EVICTION_POLICY}"

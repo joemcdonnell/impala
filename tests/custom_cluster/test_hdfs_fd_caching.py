@@ -188,7 +188,7 @@ class TestHdfsFdCaching(CustomClusterTestSuite):
   @CustomClusterTestSuite.with_args(
       impalad_args="--max_cached_file_handles=16 --unused_file_handle_timeout_sec=5 "
                    "--always_use_data_cache=true",
-      start_args="--data_cache_dir=/tmp --data_cache_size=500MB",
+      start_args="--data_cache_dirs=/tmp --data_cache_size=500MB",
       catalogd_args="--load_catalog_in_background=false")
   def test_no_fd_caching_on_cached_data(self, vector):
     """IMPALA-10147: Test that no file handle should be opened nor cached again if data
