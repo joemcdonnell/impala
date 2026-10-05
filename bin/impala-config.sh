@@ -687,7 +687,7 @@ export IMPALA_SPLIT_DEBUG_INFO=${IMPALA_SPLIT_DEBUG_INFO-false}
 
 # Set preferred malloc implementation, default to gperftools
 # The other option is googletcmalloc.
-export IMPALA_MALLOC_IMPL=${IMPALA_MALLOC_IMPL:-gperftools}
+export IMPALA_MALLOC_IMPL=${IMPALA_MALLOC_IMPL:-googletcmalloc}
 
 # Download and use the CDH components from S3. It can be useful to set this to false if
 # building against a custom local build using HIVE_SRC_DIR_OVERRIDE,
