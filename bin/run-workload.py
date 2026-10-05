@@ -35,7 +35,7 @@ import prettytable
 
 from collections import deque
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from itertools import groupby
 from optparse import OptionParser
@@ -143,6 +143,8 @@ class CustomJSONEncoder(json.JSONEncoder):
       return str(obj)
     if isinstance(obj, datetime):
       # Convert datetime into an standard iso string
+      return obj.isoformat()
+    if isinstance(obj, date):
       return obj.isoformat()
     if isinstance(obj, bytes):
       # Impyla can leave a string value as bytes when it is unable to decode it to UTF-8.
