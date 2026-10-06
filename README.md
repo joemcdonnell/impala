@@ -1,4 +1,4 @@
-# Welcome to Impala
+# Welcome to Impala (whatever)
 
 Lightning-fast, distributed [SQL](https://en.wikipedia.org/wiki/SQL) queries for petabytes
 of data stored in open data and table formats.
