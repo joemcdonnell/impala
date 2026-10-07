@@ -387,7 +387,10 @@ def run_workload(base_dir, workloads, options):
 
   run_workload = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
 
-  impalads = ",".join(["localhost:{0}".format(21050 + i)
+  # On some systems, localhost points to ::1 and 127.0.0.1, and typically Impala is
+  # not listening on ::1. Thrift will try to connect to ::1 and fail with a bunch
+  # of noisy errors. To avoid this, use 127.0.0.1 directly
+  impalads = ",".join(["127.0.0.1:{0}".format(21050 + i)
                        for i in range(0, int(options.num_coordinators))])
 
   run_workload += ["--workloads={0}".format(workloads),
