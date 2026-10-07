@@ -490,6 +490,8 @@ def restore_workloads(source):
 def drop_caches_and_compact_if_requested(options):
   # First, drop caches if requested
   if options.drop_caches_level and options.drop_caches_level != 0:
+    if options.drop_caches_level not in [1, 2, 3]:
+      raise Exception("Invalid value for drop_caches_level: {0}".format(options.drop_caches_level))
     subprocess.check_call(["sudo", "bash", "-c",
         "sync; echo {0} > /proc/sys/vm/drop_caches".format(options.drop_caches_level)])
   # Next, compact memory if requested
@@ -786,7 +788,7 @@ def parse_options():
                     help=("Additional arguments to pass to bin/start-impala-cluster.py. "
                           "--impalad_args takes precedence and can override this."))
   parser.add_option("--drop_caches_level", dest="drop_caches_level",
-                    default=None, type=int, choices=[0, 1, 2, 3],
+                    default=None, type=int,
                     help="If specified, drop Linux caches at this level (writing to "
                     "/proc/sys/vm/drop_caches) before starting the Impala cluster. If "
                     "not set or set to 0, don't drop the caches. Requires passwordless "
