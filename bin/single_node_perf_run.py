@@ -487,6 +487,16 @@ def restore_workloads(source):
                   os.path.join(IMPALA_HOME, "testdata", "workloads"), dirs_exist_ok=True)
 
 
+def drop_caches_and_compact_if_requested(options):
+  # First, drop caches if requested
+  if options.drop_caches_level and options.drop_caches_level != 0:
+    subprocess.check_call(["sudo", "bash", "-c",
+        "sync; echo {0} > /proc/sys/vm/drop_caches".format(options.drop_caches_level)])
+  # Next, compact memory if requested
+  if options.compact_memory:
+    subprocess.check_call(["sudo", "bash", "-c", "echo 1 > /proc/sys/vm/compact_memory"])
+
+
 # Read /proc/cpuinfo and produce a map from the core id to the cpu ids.
 # This is important for hyperthreaded systems, as it gives us information about
 # which cpu ids are hyperthreads on the same core.
@@ -689,9 +699,13 @@ def perf_ab_test(options, args):
 
   # Restart impala after loading data
   stop_impala()
+  # Drop caches and/or compact memory if specified
+  drop_caches_and_compact_if_requested(options)
   start_impala(options, cgroup_handler)
 
   run_workload(temp_dir, workloads, options)
+
+  stop_impala()
 
   if len(args) > 1 and args[1]:
     hash_b = get_git_hash_for_name(args[1])
@@ -700,6 +714,8 @@ def perf_ab_test(options, args):
     run_git(["checkout", "--", "testdata/workloads"])
     build(hash_b, options)
     restore_workloads(workload_dir)
+    # Drop caches and/or compact memory if specified
+    drop_caches_and_compact_if_requested(options)
     start_impala(options, cgroup_handler)
     run_workload(temp_dir, workloads, options)
     compare(temp_dir, hash_a, hash_b)
@@ -769,6 +785,16 @@ def parse_options():
                     default=[], action="append", type="string",
                     help=("Additional arguments to pass to bin/start-impala-cluster.py. "
                           "--impalad_args takes precedence and can override this."))
+  parser.add_option("--drop_caches_level", dest="drop_caches_level",
+                    default=None, type=int, choices=[0, 1, 2, 3],
+                    help="If specified, drop Linux caches at this level (writing to "
+                    "/proc/sys/vm/drop_caches) before starting the Impala cluster. If "
+                    "not set or set to 0, don't drop the caches. Requires passwordless "
+                    "sudo access.")
+  parser.add_option("--compact_memory", dest="compact_memory", action="store_true",
+                    help="Compact Linux memory by writing 1 to "
+                    "/proc/sys/vm/compact_memory before starting the Impala cluster. "
+                    "Requires passwordless sudo access.")
 
   parser.set_usage(textwrap.dedent("""
     single_node_perf_run.py [options] git_hash_A [git_hash_B]
