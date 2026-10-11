@@ -74,17 +74,15 @@
 #   --exec_options        query exec option string to run workload
 #                         (formatted as 'opt1:val1;opt2:val2')
 
-from optparse import OptionParser
 from tempfile import mkdtemp
 
+import argparse
 import json
 import os
 import pipes
 import platform
 import shutil
 import subprocess
-import sys
-import textwrap
 
 from pathlib import Path
 from tests.common.test_dimensions import TableFormatInfo
@@ -639,9 +637,9 @@ def put_pid_in_cgroup(cgroup_handler, pid, cgroup):
   cgroup_handler.put_pid_in_cgroup(pid, cgroup)
 
 
-def perf_ab_test(options, args):
+def perf_ab_test(options):
   """Does the main work: build, run tests, compare."""
-  hash_a = get_git_hash_for_name(args[0])
+  hash_a = get_git_hash_for_name(options.git_hash_a)
 
   cgroup_handler = None
   # Cgroups support relies on the caller invoking this script inside a top level
@@ -712,8 +710,8 @@ def perf_ab_test(options, args):
 
   stop_impala()
 
-  if len(args) > 1 and args[1]:
-    hash_b = get_git_hash_for_name(args[1])
+  if options.git_hash_b:
+    hash_b = get_git_hash_for_name(options.git_hash_b)
     # discard any changes created by the previous restore_workloads()
     shutil.rmtree("testdata/workloads")
     run_git(["checkout", "--", "testdata/workloads"])
@@ -737,110 +735,102 @@ def perf_ab_test(options, args):
 
 
 def parse_options():
-  """Parse and return the options and positional arguments."""
-  parser = OptionParser()
-  parser.add_option("--workloads", default="targeted-perf",
-                    help="comma-separated list of workloads. Choices: tpch, "
-                    "targeted-perf, tpcds. Default: targeted-perf")
-  parser.add_option("--scale", help="scale factor for the workloads [required]")
-  parser.add_option("--iterations", default=30, help="number of times to run each query")
-  parser.add_option("--table_formats", default="parquet/none", help="comma-separated "
-                    "list of table formats. Default: parquet/none")
-  parser.add_option("--num_impalads", default=1, type="int",
-                    help="number of impalads. Default: 1")
-  parser.add_option("--num_coordinators", default=1, type="int", dest="num_coordinators",
-                    help="Number of coordinator")
-  parser.add_option("--use_exclusive_coordinators", action="store_true", default=False,
-                    dest="use_exclusive_coordinators", help="If true, coordinators and "
-                    "executors are separate. The first C impalads are coordinator-only "
-                    "and the remaining N-C are executors.")
+  """Parse and return the options (including the positional git hashes)."""
+  parser = argparse.ArgumentParser(
+      usage="%(prog)s [options] git_hash_A [git_hash_B]",
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+      description="""
+When one hash is given, measures the performance on the specified workloads.
+When two hashes are given, compares their performance. Output is in
+$IMPALA_HOME/perf_results/latest. In the performance_result.txt file,
+git_hash_A is referred to as the "Base" result. For example, if you run with
+git_hash_A = aBad1dea... and git_hash_B = 8675309... the
+performance_result.txt will say at the top:
+
+  Run Description: "aBad1dea... vs 8675309..."
+
+The different queries will have their run time statistics in columns
+"Avg(s)", "StdDev(%)", "BaseAvg(s)", "Base StdDev(%)". The first two refer
+to git_hash_B, the second two refer to git_hash_A. The column "Delta(Avg)"
+is negative if git_hash_B is faster and is positive if git_hash_A is faster.
+
+WARNING: This script will run git checkout. You should not touch the tree
+while the script is running. You should start the script from a clean git
+tree.
+
+WARNING: When --load is used, this script calls load_data.py which can
+overwrite your TPC-H and TPC-DS data.""")
+  parser.add_argument("git_hash_a", metavar="git_hash_A",
+                      help="git hash (or ref) to measure; the 'Base' in comparisons")
+  parser.add_argument("git_hash_b", metavar="git_hash_B", nargs="?",
+                      help="optional second git hash (or ref) to compare against A")
+  parser.add_argument("--workloads", default="targeted-perf",
+                      help="comma-separated list of workloads. Choices: tpch, "
+                      "targeted-perf, tpcds. Default: targeted-perf")
+  parser.add_argument("--scale", required=True,
+                      help="scale factor for the workloads [required]")
+  parser.add_argument("--iterations", default=30, type=int,
+                      help="number of times to run each query")
+  parser.add_argument("--table_formats", default="parquet/none", help="comma-separated "
+                      "list of table formats. Default: parquet/none")
+  parser.add_argument("--num_impalads", default=1, type=int,
+                      help="number of impalads. Default: 1")
+  parser.add_argument("--num_coordinators", default=1, type=int,
+                      help="Number of coordinator")
+  parser.add_argument("--use_exclusive_coordinators", action="store_true",
+                      help="If true, coordinators and "
+                      "executors are separate. The first C impalads are coordinator-only "
+                      "and the remaining N-C are executors.")
   # Less commonly-used options:
-  parser.add_option("--query_names",
-                    help="comma-separated list of regular expressions. A query is "
-                    "executed if it matches any regular expression in this list")
-  parser.add_option("--load", action="store_true",
-                    help="load databases for the chosen workloads")
-  parser.add_option("--start_minicluster", action="store_true",
-                    help="start a new Hadoop minicluster")
-  parser.add_option("--ninja", action="store_true",
-                    help="use ninja, rather than Make, as the build tool")
-  parser.add_option("--impalad_args", dest="impalad_args", action="append", type="string",
-                    default=[],
-                    help="Additional arguments to pass to each Impalad during startup")
-  parser.add_option("--exec_options", dest="exec_options",
-                    help=("Query exec option string to run workload (formatted as "
-                      "'opt1:val1;opt2:val2')"))
-  parser.add_option("--use_cgroup_cpusets", action="store_true",
-                    dest="use_cgroup_cpusets", help=("Use cgroup cpusets to put the "
+  parser.add_argument("--query_names",
+                      help="comma-separated list of regular expressions. A query is "
+                      "executed if it matches any regular expression in this list")
+  parser.add_argument("--load", action="store_true",
+                      help="load databases for the chosen workloads")
+  parser.add_argument("--start_minicluster", action="store_true",
+                      help="start a new Hadoop minicluster")
+  parser.add_argument("--ninja", action="store_true",
+                      help="use ninja, rather than Make, as the build tool")
+  parser.add_argument("--impalad_args", action="append", default=[],
+                      help="Additional arguments to pass to each Impalad during startup")
+  parser.add_argument("--exec_options",
+                      help="Query exec option string to run workload (formatted as "
+                      "'opt1:val1;opt2:val2')")
+  parser.add_argument("--use_cgroup_cpusets", action="store_true",
+                      help="Use cgroup cpusets to put the "
                       "executors and minicluster on separate cores. This requires "
-                      "invoking this script via a systemd service."))
-  parser.add_option("--cpus_per_executor", dest="cpus_per_executor", type="int",
-                    default=1, help=("The number of cpu cores per executor when using "
-                      "cgroup cpusets"))
-  parser.add_option("--disable_hyperthreading", action="store_true",
-                    dest="disable_hyperthreading", help=("Map Impalads to only one of "
+                      "invoking this script via a systemd service.")
+  parser.add_argument("--cpus_per_executor", type=int, default=1,
+                      help="The number of cpu cores per executor when using "
+                      "cgroup cpusets")
+  parser.add_argument("--disable_hyperthreading", action="store_true",
+                      help="Map Impalads to only one of "
                       "the two hyperthreads when using cgroup cpusets. This does not do "
-                      "anything on non-hyperthreaded systems."))
-  parser.add_option("--custom_dataload_script", dest="custom_dataload_script",
-                    help=("Custom dataload script to use rather than bin/load-data.py. "
+                      "anything on non-hyperthreaded systems.")
+  parser.add_argument("--custom_dataload_script",
+                      help="Custom dataload script to use rather than bin/load-data.py. "
                       "Called with the same arguments as bin/load-data.py "
                       "(workloads,scale_factor,table_formats specified as "
-                      "--key value commandline arguments)."))
-  parser.add_option("--start_impala_cluster_args", dest="start_impala_cluster_args",
-                    default=[], action="append", type="string",
-                    help=("Additional arguments to pass to bin/start-impala-cluster.py. "
-                          "--impalad_args takes precedence and can override this."))
-  parser.add_option("--drop_caches_level", dest="drop_caches_level",
-                    default=None, type=int,
-                    help="If specified, drop Linux caches at this level (writing to "
-                    "/proc/sys/vm/drop_caches) before starting the Impala cluster. If "
-                    "not set or set to 0, don't drop the caches. Requires passwordless "
-                    "sudo access.")
-  parser.add_option("--compact_memory", dest="compact_memory", action="store_true",
-                    help="Compact Linux memory by writing 1 to "
-                    "/proc/sys/vm/compact_memory before starting the Impala cluster. "
-                    "Requires passwordless sudo access.")
+                      "--key value commandline arguments).")
+  parser.add_argument("--start_impala_cluster_args", default=[], action="append",
+                      help="Additional arguments to pass to bin/start-impala-cluster.py. "
+                      "--impalad_args takes precedence and can override this.")
+  parser.add_argument("--drop_caches_level", default=None, type=int,
+                      help="If specified, drop Linux caches at this level (writing to "
+                      "/proc/sys/vm/drop_caches) before starting the Impala cluster. If "
+                      "not set or set to 0, don't drop the caches. Requires passwordless "
+                      "sudo access.")
+  parser.add_argument("--compact_memory", action="store_true",
+                      help="Compact Linux memory by writing 1 to "
+                      "/proc/sys/vm/compact_memory before starting the Impala cluster. "
+                      "Requires passwordless sudo access.")
 
-  parser.set_usage(textwrap.dedent("""
-    single_node_perf_run.py [options] git_hash_A [git_hash_B]
-
-    When one hash is given, measures the performance on the specified workloads.
-    When two hashes are given, compares their performance. Output is in
-    $IMPALA_HOME/perf_results/latest. In the performance_result.txt file,
-    git_hash_A is referred to as the "Base" result. For example, if you run with
-    git_hash_A = aBad1dea... and git_hash_B = 8675309... the
-    performance_result.txt will say at the top:
-
-      Run Description: "aBad1dea... vs 8675309..."
-
-    The different queries will have their run time statistics in columns
-    "Avg(s)", "StdDev(%)", "BaseAvg(s)", "Base StdDev(%)". The first two refer
-    to git_hash_B, the second two refer to git_hash_A. The column "Delta(Avg)"
-    is negative if git_hash_B is faster and is positive if git_hash_A is faster.
-
-    WARNING: This script will run git checkout. You should not touch the tree
-    while the script is running. You should start the script from a clean git
-    tree.
-
-    WARNING: When --load is used, this script calls load_data.py which can
-    overwrite your TPC-H and TPC-DS data."""))
-
-  options, args = parser.parse_args()
-
-  if not 1 <= len(args) <= 2:
-    parser.print_usage(sys.stderr)
-    raise Exception("Invalid arguments: either 1 or 2 Git hashes allowed")
-
-  if not options.scale:
-    parser.print_help(sys.stderr)
-    raise Exception("--scale is required")
-
-  return options, args
+  return parser.parse_args()
 
 
 def main():
   """A thin wrapper around perf_ab_test that restores git state after."""
-  options, args = parse_options()
+  options = parse_options()
 
   os.chdir(IMPALA_HOME)
 
@@ -860,7 +850,7 @@ def main():
 
   try:
     workloads = backup_workloads()
-    perf_ab_test(options, args)
+    perf_ab_test(options)
   finally:
     # discard any changes created by the previous restore_workloads()
     shutil.rmtree("testdata/workloads")
