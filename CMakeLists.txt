@@ -33,6 +33,8 @@ project(Impala)
 
 include(cmake_modules/kudu_cmake_fns.txt)
 
+INCLUDE(ExternalProject)
+
 if (NOT DEFINED BUILD_SHARED_LIBS)
   set(BUILD_SHARED_LIBS OFF)
 endif()
@@ -147,7 +149,7 @@ set_dep_root(OPENLDAP)
 set_dep_root(PROTOBUF)
 set_dep_root(RE2)
 set_dep_root(RAPIDJSON)
-set_dep_root(SNAPPY)
+#set_dep_root(SNAPPY)
 set_dep_root_for_target(THRIFT CPP)
 set_dep_root_for_target(THRIFT JAVA)
 set_dep_root_for_target(THRIFT PY)
@@ -333,8 +335,10 @@ IMPALA_ADD_THIRDPARTY_LIB(flatbuffers ${FLATBUFFERS_INCLUDE_DIR}
 message(STATUS "FlatBuffers compiler: ${FLATBUFFERS_COMPILER}")
 
 # find Snappy headers and libs
-find_package(Snappy REQUIRED)
-IMPALA_ADD_THIRDPARTY_LIB(snappy ${SNAPPY_INCLUDE_DIR} ${SNAPPY_STATIC_LIB} "")
+#find_package(Snappy REQUIRED)
+#IMPALA_ADD_THIRDPARTY_LIB(snappy ${SNAPPY_INCLUDE_DIR} ${SNAPPY_STATIC_LIB} "")
+
+INCLUDE(Snappy)
 
 # find lz4 lib
 find_package(Lz4 REQUIRED)

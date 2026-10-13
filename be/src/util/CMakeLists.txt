@@ -171,8 +171,8 @@ if (NOT AVX2_SUPPORT)
 endif()
 
 add_library(Util ${UTIL_SRCS})
-add_dependencies(Util gen-deps)
-target_link_libraries(Util PUBLIC StackTraceUtil)
+add_dependencies(Util gen-deps impala::snappy)
+target_link_libraries(Util PUBLIC StackTraceUtil PRIVATE impala::snappy)
 
 add_library(ProfileToolUtil ${PROFILE_TOOL_UTIL_SRCS})
 add_dependencies(ProfileToolUtil gen-deps)

@@ -698,7 +698,7 @@ if (BUILD_SHARED_LIBS)
 endif ()
 
 set (IMPALA_DEPENDENCIES
-  snappy
+  impala::snappy
   lz4
   zstd
   re2

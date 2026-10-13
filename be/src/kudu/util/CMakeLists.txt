@@ -356,7 +356,7 @@ set(UTIL_COMPRESSION_LIBS
   glog
   gutil
   lz4
-  snappy
+  impala::snappy
   zlib)
 
 ADD_EXPORTABLE_LIBRARY(kudu_util_compression

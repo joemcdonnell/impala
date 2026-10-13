@@ -67,5 +67,8 @@ popd
 rm -f "${IMPALA_HOME}/llvm-ir/"impala*.ll
 rm -f "${IMPALA_HOME}/be/generated-sources/impala-ir/"*
 
+rm -rf "${IMPALA_HOME}/snappy_ep-prefix"
+rm -rf "${IMPALA_HOME}/thirdparty/snappy-*"
+
 # When switching to and from toolchain, make sure to remove all CMake generated files
 "${IMPALA_HOME}/bin/clean-cmake.sh"
