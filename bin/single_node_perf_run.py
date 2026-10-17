@@ -22,10 +22,12 @@
 #
 # When one hash is given, measures the performance on the specified workloads.
 # When two hashes are given, compares their performance. Output is in
-# $IMPALA_HOME/perf_results/latest. In the performance_result.txt file,
+# $IMPALA_HOME/perf_results/latest. A separate report is produced for each combination
+# of workload and table format, named performance_result_<workload>_<table_format>.txt
+# (with '/' in the table format replaced by '_'). In each report file,
 # git_hash_A is referred to as the "Base" result. For example, if you run with
 # git_hash_A = aBad1dea... and git_hash_B = 8675309... the
-# performance_result.txt will say at the top:
+# performance_result_*.txt will say at the top:
 #
 #   Run Description: "aBad1dea... vs 8675309..."
 #
@@ -152,23 +154,35 @@ def start_impala(num_impalads, options):
                   + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
 
 
-def run_workload(base_dir, workloads, options):
-  """Runs workload with the given options.
+def get_label(workload, table_format):
+  """Returns a string identifying a workload / table format combination."""
+  return "{0}_{1}".format(workload, table_format.replace("/", "_"))
 
-  Returns the git hash of the current revision to identify the output file.
+
+def get_result_file(base_dir, git_hash, label):
+  """Returns the path of the JSON results for a git hash and workload/table format."""
+  return os.path.join(base_dir, "{0}_{1}.json".format(git_hash, label))
+
+
+def run_workload(base_dir, workload, table_format, options):
+  """Runs a single workload with a single table format with the given options.
+
+  Writes the results to a file identified by the git hash, workload and table format.
   """
   git_hash = get_git_hash_for_name("HEAD")
+  label = get_label(workload, table_format)
 
   run_workload = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
 
   impalads = ",".join(["localhost:{0}".format(21050 + i)
                        for i in range(0, int(options.num_impalads))])
 
-  run_workload += ["--workloads={0}".format(workloads),
+  run_workload += ["--workload={0}:{1}".format(workload, options.scale),
                    "--impalads={0}".format(impalads),
-                   "--results_json_file={0}/{1}.json".format(base_dir, git_hash),
+                   "--results_json_file={0}".format(
+                       get_result_file(base_dir, git_hash, label)),
                    "--query_iterations={0}".format(options.iterations),
-                   "--table_formats={0}".format(options.table_formats),
+                   "--table_format={0}".format(table_format),
                    "--plan_first"]
 
   if options.exec_options:
@@ -180,7 +194,14 @@ def run_workload(base_dir, workloads, options):
   configured_call(run_workload)
 
 
-def report_benchmark_results(file_a, file_b, description):
+def run_workloads(base_dir, workloads, table_formats, options):
+  """Runs every combination of workload and table format."""
+  for workload in workloads:
+    for table_format in table_formats:
+      run_workload(base_dir, workload, table_format, options)
+
+
+def report_benchmark_results(file_a, file_b, description, label):
   """Wrapper around report_benchmark_result.py."""
   # This is using impala-python3, so it can tolerate inheriting the environment.
   performance_result = subprocess.check_output(
@@ -194,33 +215,40 @@ def report_benchmark_results(file_a, file_b, description):
   print(performance_result)
 
   # Dump the performance result to a file to preserve
-  result = os.path.join(IMPALA_PERF_RESULTS, "latest", "performance_result.txt")
+  result = os.path.join(IMPALA_PERF_RESULTS, "latest",
+                        "performance_result_{0}.txt".format(label))
   with open(result, "w") as f:
     f.write(performance_result)
 
 
-def compare(base_dir, hash_a, hash_b, options):
-  """Take the results of two performance runs and compare them."""
-  file_a = os.path.join(base_dir, hash_a + ".json")
-  file_b = os.path.join(base_dir, hash_b + ".json")
-  description = "{0} vs {1}".format(hash_a, hash_b)
-  report_benchmark_results(file_a, file_b, description)
+def compare(base_dir, hash_a, hash_b, label, options):
+  """Take the results of two performance runs of one workload / table format and
+  compare them."""
+  file_a = get_result_file(base_dir, hash_a, label)
+  file_b = get_result_file(base_dir, hash_b, label)
+  description = "{0} vs {1} ({2})".format(hash_a, hash_b, label)
+  report_benchmark_results(file_a, file_b, description, label)
+
+  # Qualify the hashes with the label so different combinations don't collide
+  name_a = "{0}_{1}".format(hash_a, label)
+  name_b = "{0}_{1}".format(hash_b, label)
+  diff_file = "performance_result_profile_diff_{0}.txt".format(label)
 
   # From the two json files extract the profiles and diff them
   if options.split_profiles:
-    generate_profile_files(file_a, hash_a, base_dir)
-    generate_profile_files(file_b, hash_b, base_dir)
-    with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
+    generate_profile_files(file_a, name_a, base_dir)
+    generate_profile_files(file_b, name_b, base_dir)
+    with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
       # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profiles"),
-        os.path.join(base_dir, hash_b + "_profiles")], stdout=f, text=True, env={})
+      subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profiles"),
+        os.path.join(base_dir, name_b + "_profiles")], stdout=f, text=True, env={})
   else:
-    generate_profile_file(file_a, hash_a, base_dir)
-    generate_profile_file(file_b, hash_b, base_dir)
-    with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
+    generate_profile_file(file_a, name_a, base_dir)
+    generate_profile_file(file_b, name_b, base_dir)
+    with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
       # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profile.txt"),
-        os.path.join(base_dir, hash_b + "_profile.txt")], stdout=f, text=True, env={})
+      subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profile.txt"),
+        os.path.join(base_dir, name_b + "_profile.txt")], stdout=f, text=True, env={})
 
 
 def generate_profile_file(name, hash, base_dir):
@@ -308,6 +336,7 @@ def perf_ab_test(options, args):
   start_impala(options.num_impalads, options)
 
   workloads = options.workloads.split(",")
+  table_formats = options.table_formats.split(",")
 
   if options.load:
     WORKLOAD_TO_DATASET = {
@@ -324,10 +353,7 @@ def perf_ab_test(options, args):
     for dataset in datasets:
       load_data(dataset, options.table_formats, options.scale)
 
-  workloads = ",".join(["{0}:{1}".format(workload, options.scale)
-                        for workload in workloads])
-
-  run_workload(temp_dir, workloads, options)
+  run_workloads(temp_dir, workloads, table_formats, options)
 
   if len(args) > 1 and args[1]:
     hash_b = get_git_hash_for_name(args[1])
@@ -337,8 +363,10 @@ def perf_ab_test(options, args):
     build(hash_b, options)
     restore_workloads(workload_dir)
     start_impala(options.num_impalads, options)
-    run_workload(temp_dir, workloads, options)
-    compare(temp_dir, hash_a, hash_b, options)
+    run_workloads(temp_dir, workloads, table_formats, options)
+    for workload in workloads:
+      for table_format in table_formats:
+        compare(temp_dir, hash_a, hash_b, get_label(workload, table_format), options)
 
 
 def parse_options():

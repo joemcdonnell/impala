@@ -20,9 +20,9 @@
 # This script is used as the driver to run performance benchmarks.
 # It does the following:
 #   - parses the user defined options and validates them.
-#   - Matches each workload to its set of queries and constructs the required objects.
-#   - Runs each workload in serial order (a workload is a combination of dataset and scale
-#     factor)
+#   - Matches the workload to its set of queries and constructs the required objects.
+#   - Runs the workload (a combination of dataset and scale factor) against a single
+#     table format.
 #   - Pretty prints the results of each query's execution.
 #   - Stores the execution details in JSON format.
 #
@@ -37,7 +37,6 @@ from collections import deque
 from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal
-from itertools import groupby
 from optparse import OptionParser
 from random import shuffle
 from sys import exit
@@ -52,13 +51,9 @@ from tests.util.plugin_runner import PluginRunner
 parser = OptionParser()
 parser.add_option("-v", "--verbose", dest="verbose", action="store_true",
                   default=False, help="If set, outputs all benchmark diagnostics.")
-parser.add_option("--exploration_strategy", dest="exploration_strategy", default="core",
-                  help=("The exploration strategy to use for running benchmark: 'core', "
-                        "'pairwise', or 'exhaustive'"))
-parser.add_option("-w", "--workloads", dest="workloads", default="tpcds",
-                  help=("The workload(s) and scale factors to run in a comma-separated "
-                  " list format. Optional scale factors for each workload are specified"
-                  " using colons. For example: -w tpcds,tpch:400gb,tpch:1gb. "
+parser.add_option("-w", "--workload", dest="workload", default="tpcds",
+                  help=("The workload to run, with an optional scale factor specified "
+                  "using a colon. For example: -w tpch:400gb. "
                   "Some valid workloads:'tpch', 'tpcds', ..."))
 parser.add_option("--impalads", dest="impalads", default="localhost",
                   help=("A comma-separated list of impalad instances to run the "
@@ -78,10 +73,9 @@ parser.add_option("--num_clients", type="int", dest="num_clients", default=1,
 parser.add_option("--query_names", dest="query_names", default=str(),
                   help="A comma-separated list of regular expressions. A query is"
                     " executed if it matches any of the expressions.")
-parser.add_option("--table_formats", dest="table_formats", default=str(),
-                  help=("Override the default test vectors and run using only the"
-                        " specified table formats. Ex. --table_formats=seq/snap/block"
-                        ",text/none"))
+parser.add_option("--table_format", dest="table_format", default="parquet/none",
+                  help=("The single table format to run with. "
+                        "Ex. --table_format=seq/snap/block"))
 parser.add_option("--shuffle_query_exec_order", dest="shuffle_queries",
                   action="store_true", default=False, help=("Randomizes the order "
                     "of query execution. Useful when the execution scope is a workload"))
@@ -163,18 +157,15 @@ def prettytable_print(results, failed=False):
   table = prettytable.PrettyTable(column_names)
   table.align = 'l'
   table.float_format = '.2'
-  # Group the results by table format.
-  for table_format_str, gr in groupby(results, lambda x: x.query.table_format_str):
-    print("Table Format: %s" % table_format_str)
-    for result in gr:
-      start_time = result.start_time.strftime("%Y-%m-%d %H:%M:%S") if result.start_time \
-          is not None else '-'
-      row = [result.query.name, start_time, result.time_taken, result.client_name]
-      if failed: row.append(result.query_error)
-      table.add_row(row)
-    print(table.get_string(sortby='Client ID'))
-    table.clear_rows()
-    print(str())
+  print("Table Format: %s" % options.table_format)
+  for result in results:
+    start_time = result.start_time.strftime("%Y-%m-%d %H:%M:%S") if result.start_time \
+        is not None else '-'
+    row = [result.query.name, start_time, result.time_taken, result.client_name]
+    if failed: row.append(result.query_error)
+    table.add_row(row)
+  print(table.get_string(sortby='Client ID'))
+  print(str())
 
 
 def print_result_summary(results):
@@ -186,19 +177,15 @@ def print_result_summary(results):
 
 
 def get_workload_scale_factor():
-  """Extract the workload -> scale factor mapping from the command line
+  """Extract the (workload, scale factor) pair from the command line
 
-  The expected string is "workload_1[:scale_factor_1],...,workload_n[:scale_factor_n]"
+  The expected string is "workload[:scale_factor]". The scale factor is an empty string
+  if it is not specified.
   """
-  workload_str = options.workloads
-  workload_tuples = split_and_strip(workload_str)
-  assert len(workload_tuples) > 0, "At least one workload must be specified"
-  for workload_tuple in workload_tuples:
-    # Each member should conform to workload[:scale_factor]
-    workload_tuple = split_and_strip(workload_tuple, delim=":")
-    assert len(workload_tuple) in [1, 2], "Error parsing workload:scale_factor"
-    if len(workload_tuple) == 1: workload_tuple.append(str())
-    yield workload_tuple
+  workload_tuple = split_and_strip(options.workload, delim=":")
+  assert len(workload_tuple) in [1, 2], "Error parsing workload:scale_factor"
+  if len(workload_tuple) == 1: workload_tuple.append(str())
+  return workload_tuple
 
 
 def split_and_strip(input_string, delim=","):
@@ -215,13 +202,12 @@ def create_workload_config():
   objects, and need to be added to the config.
   """
   config = deepcopy(vars(options))
-  # We don't need workloads and query_names in the config map as they're already specified
+  # We don't need workload and query_names in the config map as they're already specified
   # in the workload object.
-  del config['workloads']
+  del config['workload']
   del config['query_names']
   config['plugin_runner'] = plugin_runner
-  # transform a few options from strings to lists
-  config['table_formats'] = split_and_strip(config['table_formats'])
+  # transform impalads from a string to a list
   impalads = split_and_strip(config['impalads'])
   # Randomize the order of impalads.
   shuffle(impalads)
@@ -238,10 +224,11 @@ def _validate_options():
   if options.exec_engine.lower() == "hive" and options.client_type != "hs2":
     raise RuntimeError("The only supported client type for Hive engine is hs2")
 
-  # Check for duplicate workload/scale_factor combinations
-  workloads = split_and_strip(options.workloads)
-  if not len(set(workloads)) == len(workloads):
-    raise RuntimeError("Duplicate workload/scale factor combinations are not allowed")
+  # Only a single workload and a single table format are supported.
+  if "," in options.workload:
+    raise RuntimeError("Only a single workload[:scale_factor] is allowed")
+  if "," in options.table_format:
+    raise RuntimeError("Only a single table format is allowed")
 
   # The list of Impalads must be provided as a comma separated list of either host:port
   # combination or just host.
@@ -260,33 +247,29 @@ if __name__ == "__main__":
   if options.plugin_names:
     plugin_runner = PluginRunner(split_and_strip(options.plugin_names))
 
-  # Intialize workloads.
-  workload_runners = list()
+  # Initialize the workload.
   query_name_filters = split_and_strip(options.query_names)
-  # Create a workload config object.
-  for workload_name, scale_factor in get_workload_scale_factor():
-    config = create_workload_config()
-    workload = Workload(workload_name, query_name_filters=query_name_filters)
-    workload_runners.append(WorkloadRunner(workload, scale_factor, config))
+  workload_name, scale_factor = get_workload_scale_factor()
+  config = create_workload_config()
+  workload = Workload(workload_name, query_name_filters=query_name_filters)
+  workload_runner = WorkloadRunner(workload, scale_factor, config)
 
-  # Run all the workloads serially
-  result_map = dict()
+  # Run the workload
   exit_code = 0
-  for workload_runner in workload_runners:
-    try:
-      if plugin_runner: plugin_runner.run_plugins_pre(scope="Workload")
-      workload_runner.run()
-      if plugin_runner: plugin_runner.run_plugins_post(scope="Workload")
-    finally:
-      key = "%s_%s" % (workload_runner.workload.name, workload_runner.scale_factor)
-      result_map[key] = workload_runner.results
+  try:
+    if plugin_runner: plugin_runner.run_plugins_pre(scope="Workload")
+    workload_runner.run()
+    if plugin_runner: plugin_runner.run_plugins_post(scope="Workload")
+  finally:
+    key = "%s_%s" % (workload_runner.workload.name, workload_runner.scale_factor)
+    result_map = {key: workload_runner.results}
 
-      if not all(result.success for result in workload_runner.results): exit_code = 1
+    if not all(result.success for result in workload_runner.results): exit_code = 1
 
-      # Print the results
-      print("\nWorkload: {0}, Scale Factor: {1}\n".format(
-          workload_runner.workload.name.upper(), workload_runner.scale_factor))
-      print_result_summary(workload_runner.results)
+    # Print the results
+    print("\nWorkload: {0}, Scale Factor: {1}\n".format(
+        workload_runner.workload.name.upper(), workload_runner.scale_factor))
+    print_result_summary(workload_runner.results)
 
   # Store the results
   with open(options.results_json_file, 'w') as f:
