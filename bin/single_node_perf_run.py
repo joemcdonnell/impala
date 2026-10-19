@@ -79,7 +79,6 @@
 from optparse import OptionParser
 from tempfile import mkdtemp
 
-import json
 import os
 import pipes
 import shutil
@@ -191,9 +190,8 @@ def run_workload(base_dir, workload, table_format, options):
   if options.query_names:
     run_workload += ["--query_names={0}".format(options.query_names)]
 
-  if options.split_profiles:
-    profile_dir = os.path.join(base_dir, "{0}_{1}_profiles".format(git_hash, label))
-    run_workload += ["--profile_dir={0}".format(profile_dir)]
+  profile_dir = os.path.join(base_dir, "{0}_{1}_profiles".format(git_hash, label))
+  run_workload += ["--profile_dir={0}".format(profile_dir)]
 
   configured_call(run_workload)
 
@@ -238,35 +236,11 @@ def compare(base_dir, hash_a, hash_b, label, options):
   name_b = "{0}_{1}".format(hash_b, label)
   diff_file = "performance_result_profile_diff_{0}.txt".format(label)
 
-  # Diff the profiles. In split mode run-workload.py already wrote them as separate
-  # files; otherwise extract them from the two json files.
-  if options.split_profiles:
-    with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
-      # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profiles"),
-        os.path.join(base_dir, name_b + "_profiles")], stdout=f, text=True, env={})
-  else:
-    generate_profile_file(file_a, name_a, base_dir)
-    generate_profile_file(file_b, name_b, base_dir)
-    with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
-      # This does not check that the diff command succeeds
-      subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profile.txt"),
-        os.path.join(base_dir, name_b + "_profile.txt")], stdout=f, text=True, env={})
-
-
-def generate_profile_file(name, hash, base_dir):
-  """Extracts runtime profiles from the JSON file 'name'.
-
-  Writes the runtime profiles back in a simple text file in the same directory.
-  """
-  with open(name, 'rb') as fid:
-    data = json.loads(fid.read().decode("utf-8", "ignore"))
-    with open(os.path.join(base_dir, hash + "_profile.txt"), "w+") as out:
-      # For each query
-      for key in data:
-        for iteration in data[key]:
-          out.write(iteration["runtime_profile"])
-          out.write("\n\n")
+  # Diff the profiles that run-workload.py wrote as separate files
+  with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
+    # This does not check that the diff command succeeds
+    subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profiles"),
+      os.path.join(base_dir, name_b + "_profiles")], stdout=f, text=True, env={})
 
 
 def backup_workloads():
@@ -369,12 +343,6 @@ def parse_options():
   parser.add_option("--impalad_args", dest="impalad_args", action="append", type="string",
                     default=[],
                     help="Additional arguments to pass to each Impalad during startup")
-  parser.add_option("--split_profiles", action="store_true", dest="split_profiles",
-                    default=True, help=("If specified, query profiles will be generated "
-                      "as separate files"))
-  parser.add_option("--no_split_profiles", action="store_false", dest="split_profiles",
-                    help=("If specified, query profiles will be generated as a "
-                      "single-combined file"))
   parser.add_option("--exec_options", dest="exec_options",
                     help=("Query exec option string to run workload (formatted as "
                       "'opt1:val1;opt2:val2')"))
