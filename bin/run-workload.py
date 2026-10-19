@@ -68,6 +68,9 @@ parser.add_option("--results_json_file", dest="results_json_file",
 parser.add_option("--results_csv_file", dest="results_csv_file", default=None,
                   help=("If set, write a CSV file with one row per query and one "
                     "column per run containing the time taken (in seconds)"))
+parser.add_option("--profile_dir", dest="profile_dir", default=None,
+                  help=("If set, write the runtime profile of each query run as a "
+                    "separate file in this directory (created if missing)"))
 parser.add_option("-i", "--query_iterations", type="int", dest="query_iterations",
                   default=1, help="Number of times to run each query within a workload")
 parser.add_option("-x", "--workload_iterations", type="int", dest="workload_iterations",
@@ -196,6 +199,21 @@ def write_results_csv(results, path):
       writer.writerow([name] + ['' if t is None else t for t in times])
 
 
+def write_profile_files(results, profile_dir):
+  """Write each result's runtime profile to its own file in 'profile_dir'.
+
+  Files are named '[query name]_iter[NNN].txt', numbering the runs of each query in the
+  order they appear in 'results'."""
+  os.makedirs(profile_dir, exist_ok=True)
+  iter_num = dict()
+  for result in results:
+    query_name = result.query.name
+    iter_num[query_name] = iter_num.get(query_name, 0) + 1
+    file_name = "{}_iter{:03d}.txt".format(query_name, iter_num[query_name])
+    with open(os.path.join(profile_dir, file_name), "w") as f:
+      f.write(getattr(result, 'runtime_profile', str()))
+
+
 def get_workload_scale_factor():
   """Extract the (workload, scale factor) pair from the command line
 
@@ -297,5 +315,8 @@ if __name__ == "__main__":
 
   if options.results_csv_file:
     write_results_csv(workload_runner.results, options.results_csv_file)
+
+  if options.profile_dir:
+    write_profile_files(workload_runner.results, options.profile_dir)
 
   exit(exit_code)

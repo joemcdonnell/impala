@@ -191,6 +191,10 @@ def run_workload(base_dir, workload, table_format, options):
   if options.query_names:
     run_workload += ["--query_names={0}".format(options.query_names)]
 
+  if options.split_profiles:
+    profile_dir = os.path.join(base_dir, "{0}_{1}_profiles".format(git_hash, label))
+    run_workload += ["--profile_dir={0}".format(profile_dir)]
+
   configured_call(run_workload)
 
 
@@ -234,10 +238,9 @@ def compare(base_dir, hash_a, hash_b, label, options):
   name_b = "{0}_{1}".format(hash_b, label)
   diff_file = "performance_result_profile_diff_{0}.txt".format(label)
 
-  # From the two json files extract the profiles and diff them
+  # Diff the profiles. In split mode run-workload.py already wrote them as separate
+  # files; otherwise extract them from the two json files.
   if options.split_profiles:
-    generate_profile_files(file_a, name_a, base_dir)
-    generate_profile_files(file_b, name_b, base_dir)
     with open(os.path.join(IMPALA_HOME, diff_file), "w") as f:
       # This does not check that the diff command succeeds
       subprocess.run(["diff", "-u", os.path.join(base_dir, name_a + "_profiles"),
@@ -264,33 +267,6 @@ def generate_profile_file(name, hash, base_dir):
         for iteration in data[key]:
           out.write(iteration["runtime_profile"])
           out.write("\n\n")
-
-
-def generate_profile_files(name, hash, base_dir):
-  """Extracts runtime profiles from the JSON file 'name'.
-
-  Writes the runtime profiles back as separated simple text file in '[hash]_profiles' dir
-  in base_dir.
-  """
-  profile_dir = os.path.join(base_dir, hash + "_profiles")
-  if not os.path.exists(profile_dir):
-    os.makedirs(profile_dir)
-  with open(name, 'rb') as fid:
-    data = json.loads(fid.read().decode("utf-8", "ignore"))
-    iter_num = {}
-    # For each query
-    for key in data:
-      for iteration in data[key]:
-        query_name = iteration["query"]["name"]
-        if query_name in iter_num:
-          iter_num[query_name] += 1
-        else:
-          iter_num[query_name] = 1
-        curr_iter = iter_num[query_name]
-
-        file_name = "{}_iter{:03d}.txt".format(query_name, curr_iter)
-        with open(os.path.join(profile_dir, file_name), "w") as out:
-          out.write(iteration["runtime_profile"])
 
 
 def backup_workloads():
