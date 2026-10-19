@@ -158,12 +158,18 @@ def get_label(workload, table_format):
   return "{0}_{1}".format(workload, table_format.replace("/", "_"))
 
 
-def get_result_file(base_dir, git_hash, label):
-  """Returns the path of the JSON results for a git hash and workload/table format."""
-  return os.path.join(base_dir, "{0}_{1}.json".format(git_hash, label))
+def get_run_name(side, git_hash, label):
+  """Returns '[a|b]_[10-char hash]_[label]', the stem for a run's output files."""
+  return "{0}_{1}_{2}".format(side, git_hash[:10], label)
 
 
-def run_workload(base_dir, workload, table_format, options):
+def get_result_file(base_dir, side, git_hash, label):
+  """Returns the path of the JSON results for a side ("a" or "b"), git hash and
+  workload/table format."""
+  return os.path.join(base_dir, get_run_name(side, git_hash, label) + ".json")
+
+
+def run_workload(base_dir, side, workload, table_format, options):
   """Runs a single workload with a single table format with the given options.
 
   Writes the results to a file identified by the git hash, workload and table format.
@@ -179,7 +185,7 @@ def run_workload(base_dir, workload, table_format, options):
   run_workload += ["--workload={0}:{1}".format(workload, options.scale),
                    "--impalads={0}".format(impalads),
                    "--results_json_file={0}".format(
-                       get_result_file(base_dir, git_hash, label)),
+                       get_result_file(base_dir, side, git_hash, label)),
                    "--query_iterations={0}".format(options.iterations),
                    "--table_format={0}".format(table_format),
                    "--plan_first"]
@@ -190,17 +196,17 @@ def run_workload(base_dir, workload, table_format, options):
   if options.query_names:
     run_workload += ["--query_names={0}".format(options.query_names)]
 
-  profile_dir = os.path.join(base_dir, "{0}_{1}_profiles".format(git_hash, label))
+  profile_dir = os.path.join(base_dir, get_run_name(side, git_hash, label) + "_profiles")
   run_workload += ["--profile_dir={0}".format(profile_dir)]
 
   configured_call(run_workload)
 
 
-def run_workloads(base_dir, workloads, table_formats, options):
+def run_workloads(base_dir, side, workloads, table_formats, options):
   """Runs every combination of workload and table format."""
   for workload in workloads:
     for table_format in table_formats:
-      run_workload(base_dir, workload, table_format, options)
+      run_workload(base_dir, side, workload, table_format, options)
 
 
 def report_benchmark_results(file_a, file_b, description, label):
@@ -226,14 +232,14 @@ def report_benchmark_results(file_a, file_b, description, label):
 def compare(base_dir, hash_a, hash_b, label, options):
   """Take the results of two performance runs of one workload / table format and
   compare them."""
-  file_a = get_result_file(base_dir, hash_a, label)
-  file_b = get_result_file(base_dir, hash_b, label)
+  file_a = get_result_file(base_dir, "a", hash_a, label)
+  file_b = get_result_file(base_dir, "b", hash_b, label)
   description = "{0} vs {1} ({2})".format(hash_a, hash_b, label)
   report_benchmark_results(file_a, file_b, description, label)
 
   # Qualify the hashes with the label so different combinations don't collide
-  name_a = "{0}_{1}".format(hash_a, label)
-  name_b = "{0}_{1}".format(hash_b, label)
+  name_a = get_run_name("a", hash_a, label)
+  name_b = get_run_name("b", hash_b, label)
   diff_file = "performance_result_profile_diff_{0}.txt".format(label)
 
   # Diff the profiles that run-workload.py wrote as separate files
@@ -303,7 +309,7 @@ def perf_ab_test(options, args):
     for dataset in datasets:
       load_data(dataset, options.table_formats, options.scale)
 
-  run_workloads(temp_dir, workloads, table_formats, options)
+  run_workloads(temp_dir, "a", workloads, table_formats, options)
 
   if len(args) > 1 and args[1]:
     hash_b = get_git_hash_for_name(args[1])
@@ -313,7 +319,7 @@ def perf_ab_test(options, args):
     build(hash_b, options)
     restore_workloads(workload_dir)
     start_impala(options.num_impalads, options)
-    run_workloads(temp_dir, workloads, table_formats, options)
+    run_workloads(temp_dir, "b", workloads, table_formats, options)
     for workload in workloads:
       for table_format in table_formats:
         compare(temp_dir, hash_a, hash_b, get_label(workload, table_format), options)
