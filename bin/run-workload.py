@@ -27,6 +27,7 @@
 #   - Stores the execution details in JSON format.
 #
 
+import csv
 import getpass
 import json
 import logging
@@ -64,6 +65,9 @@ parser.add_option("--exec_options", dest="exec_options", default=str(),
 parser.add_option("--results_json_file", dest="results_json_file",
                   default=os.environ['IMPALA_HOME'] + "/benchmark_results.json",
                   help="The output file where benchmark results are saved")
+parser.add_option("--results_csv_file", dest="results_csv_file", default=None,
+                  help=("If set, write a CSV file with one row per query and one "
+                    "column per run containing the time taken (in seconds)"))
 parser.add_option("-i", "--query_iterations", type="int", dest="query_iterations",
                   default=1, help="Number of times to run each query within a workload")
 parser.add_option("-x", "--workload_iterations", type="int", dest="workload_iterations",
@@ -176,6 +180,22 @@ def print_result_summary(results):
   if failed_results: prettytable_print(failed_results, failed=True)
 
 
+def write_results_csv(results, path):
+  """Write a CSV with one row per query and one column per run's time taken.
+
+  Runs are in the order they appear in 'results'. Failed runs get an empty cell."""
+  times_by_query = dict()
+  for result in results:
+    times = times_by_query.setdefault(result.query.name, list())
+    times.append(result.time_taken if result.success else None)
+  num_runs = max([len(t) for t in times_by_query.values()] or [0])
+  with open(path, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['query'] + ['run_%d' % (i + 1) for i in range(num_runs)])
+    for name, times in times_by_query.items():
+      writer.writerow([name] + ['' if t is None else t for t in times])
+
+
 def get_workload_scale_factor():
   """Extract the (workload, scale factor) pair from the command line
 
@@ -274,5 +294,8 @@ if __name__ == "__main__":
   # Store the results
   with open(options.results_json_file, 'w') as f:
     json.dump(result_map, f, cls=CustomJSONEncoder, ensure_ascii=False)
+
+  if options.results_csv_file:
+    write_results_csv(workload_runner.results, options.results_csv_file)
 
   exit(exit_code)
