@@ -22,10 +22,10 @@
 #
 # When one hash is given, measures the performance on the specified workloads.
 # When two hashes are given, compares their performance. Output is in
-# $IMPALA_HOME/perf_results/latest. In the performance_result.txt file,
+# $IMPALA_HOME/perf_results/latest. In the performance_result_*.txt files,
 # git_hash_A is referred to as the "Base" result. For example, if you run with
 # git_hash_A = aBad1dea... and git_hash_B = 8675309... the
-# performance_result.txt will say at the top:
+# performance_result_*.txt will say at the top:
 #
 #   Run Description: "aBad1dea... vs 8675309..."
 #
@@ -50,6 +50,13 @@
 #
 # WARNING: This script does not respect any existing environment variables. Environment
 # variables should be placed into bin/impala-config-local.sh to have an effect.
+#
+# Each combination of workload and table format is run and reported separately. For a
+# combination named '[workload]_[table_format with / replaced by _]' (e.g.
+# tpch_parquet_none), the output files are:
+#   - perf_results/latest/performance_result_[combination].txt
+#   - $IMPALA_HOME/performance_result_profile_diff_[combination].txt
+# along with the per-run JSON results and runtime profiles in perf_results/latest.
 #
 # Options:
 #   -h, --help            show this help message and exit
@@ -151,35 +158,52 @@ def start_impala(num_impalads, options):
                   + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
 
 
-def run_workload(base_dir, workloads, options):
-  """Runs workload with the given options.
+def get_combinations(options):
+  """Returns a list of (workload, table_format, name) for each combination of the
+  requested workloads and table formats. 'name' is suitable for use in file names."""
+  return [(workload, table_format,
+           "{0}_{1}".format(workload, table_format.replace("/", "_")))
+          for workload in options.workloads.split(",")
+          for table_format in options.table_formats.split(",")]
 
-  Returns the git hash of the current revision to identify the output file.
+
+def run_workload(base_dir, git_hash, workload, table_format, name, options):
+  """Runs a single combination of workload and table format with the given options.
+
+  'name' identifies the combination. The results are written to
+  '[base_dir]/[git_hash]_[name].json'.
   """
-  git_hash = get_git_hash_for_name("HEAD")
-
-  run_workload = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
-
   impalads = ",".join(["localhost:{0}".format(21050 + i)
                        for i in range(0, int(options.num_impalads))])
 
-  run_workload += ["--workloads={0}".format(workloads),
-                   "--impalads={0}".format(impalads),
-                   "--results_json_file={0}/{1}.json".format(base_dir, git_hash),
-                   "--query_iterations={0}".format(options.iterations),
-                   "--table_formats={0}".format(options.table_formats),
-                   "--plan_first"]
+  cmd = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
+  cmd += ["--workload={0}:{1}".format(workload, options.scale),
+          "--impalads={0}".format(impalads),
+          "--results_json_file={0}/{1}_{2}.json".format(base_dir, git_hash, name),
+          "--query_iterations={0}".format(options.iterations),
+          "--table_format={0}".format(table_format),
+          "--plan_first"]
 
   if options.exec_options:
-    run_workload += ["--exec_options={0}".format(options.exec_options)]
+    cmd += ["--exec_options={0}".format(options.exec_options)]
 
   if options.query_names:
-    run_workload += ["--query_names={0}".format(options.query_names)]
+    cmd += ["--query_names={0}".format(options.query_names)]
 
-  configured_call(run_workload)
+  configured_call(cmd)
 
 
-def report_benchmark_results(file_a, file_b, description):
+def run_workloads(base_dir, options):
+  """Runs each combination of workload and table format with the given options.
+
+  Each combination writes its results to '[base_dir]/[git hash]_[combination].json'.
+  """
+  git_hash = get_git_hash_for_name("HEAD")
+  for workload, table_format, name in get_combinations(options):
+    run_workload(base_dir, git_hash, workload, table_format, name, options)
+
+
+def report_benchmark_results(file_a, file_b, description, name):
   """Wrapper around report_benchmark_result.py."""
   # This is using impala-python3, so it can tolerate inheriting the environment.
   performance_result = subprocess.check_output(
@@ -193,34 +217,49 @@ def report_benchmark_results(file_a, file_b, description):
   print(performance_result)
 
   # Dump the performance result to a file to preserve
-  result = os.path.join(IMPALA_PERF_RESULTS, "latest", "performance_result.txt")
+  result = os.path.join(IMPALA_PERF_RESULTS, "latest",
+                        "performance_result_{0}.txt".format(name))
   with open(result, "w") as f:
     f.write(performance_result)
 
 
-def compare(base_dir, hash_a, hash_b, options):
-  """Take the results of two performance runs and compare them."""
-  file_a = os.path.join(base_dir, hash_a + ".json")
-  file_b = os.path.join(base_dir, hash_b + ".json")
+def compare(base_dir, hash_a, hash_b, name):
+  """Take the results of two performance runs for one combination of workload and table
+  format (identified by 'name') and compare them."""
+  prefix_a = "{0}_{1}".format(hash_a, name)
+  prefix_b = "{0}_{1}".format(hash_b, name)
+  file_a = os.path.join(base_dir, prefix_a + ".json")
+  file_b = os.path.join(base_dir, prefix_b + ".json")
   description = "{0} vs {1}".format(hash_a, hash_b)
-  report_benchmark_results(file_a, file_b, description)
+  report_benchmark_results(file_a, file_b, description, name)
 
   # From the two json files extract the profiles and diff them
-  generate_profile_files(file_a, hash_a, base_dir)
-  generate_profile_files(file_b, hash_b, base_dir)
-  with open(os.path.join(IMPALA_HOME, "performance_result_profile_diff.txt"), "w") as f:
+  diff_file = os.path.join(
+      IMPALA_HOME, "performance_result_profile_diff_{0}.txt".format(name))
+  generate_profile_files(file_a, prefix_a, base_dir)
+  generate_profile_files(file_b, prefix_b, base_dir)
+  with open(diff_file, "w") as f:
     # This does not check that the diff command succeeds
-    subprocess.run(["diff", "-u", os.path.join(base_dir, hash_a + "_profiles"),
-      os.path.join(base_dir, hash_b + "_profiles")], stdout=f, text=True, env={})
+    subprocess.run(["diff", "-u", os.path.join(base_dir, prefix_a + "_profiles"),
+      os.path.join(base_dir, prefix_b + "_profiles")], stdout=f, text=True, env={})
 
 
-def generate_profile_files(name, hash, base_dir):
+def compare_all(base_dir, hash_a, hash_b, options):
+  """Take the results of two performance runs and compare them.
+
+  Each combination of workload and table format is compared and reported separately.
+  """
+  for _, _, name in get_combinations(options):
+    compare(base_dir, hash_a, hash_b, name)
+
+
+def generate_profile_files(name, prefix, base_dir):
   """Extracts runtime profiles from the JSON file 'name'.
 
-  Writes the runtime profiles back as separated simple text file in '[hash]_profiles' dir
-  in base_dir.
+  Writes the runtime profiles back as separated simple text file in '[prefix]_profiles'
+  dir in base_dir.
   """
-  profile_dir = os.path.join(base_dir, hash + "_profiles")
+  profile_dir = os.path.join(base_dir, prefix + "_profiles")
   if not os.path.exists(profile_dir):
     os.makedirs(profile_dir)
   with open(name, 'rb') as fid:
@@ -300,10 +339,7 @@ def perf_ab_test(options, args):
     for dataset in datasets:
       load_data(dataset, options.table_formats, options.scale)
 
-  workloads = ",".join(["{0}:{1}".format(workload, options.scale)
-                        for workload in workloads])
-
-  run_workload(temp_dir, workloads, options)
+  run_workloads(temp_dir, options)
 
   if len(args) > 1 and args[1]:
     hash_b = get_git_hash_for_name(args[1])
@@ -313,8 +349,8 @@ def perf_ab_test(options, args):
     build(hash_b, options)
     restore_workloads(workload_dir)
     start_impala(options.num_impalads, options)
-    run_workload(temp_dir, workloads, options)
-    compare(temp_dir, hash_a, hash_b, options)
+    run_workloads(temp_dir, options)
+    compare_all(temp_dir, hash_a, hash_b, options)
 
 
 def parse_options():
@@ -325,10 +361,10 @@ def parse_options():
       description=textwrap.dedent("""\
         When one hash is given, measures the performance on the specified workloads.
         When two hashes are given, compares their performance. Output is in
-        $IMPALA_HOME/perf_results/latest. In the performance_result.txt file,
+        $IMPALA_HOME/perf_results/latest. In the performance_result_*.txt files,
         git_hash_A is referred to as the "Base" result. For example, if you run with
         git_hash_A = aBad1dea... and git_hash_B = 8675309... the
-        performance_result.txt will say at the top:
+        performance_result_*.txt will say at the top:
 
           Run Description: "aBad1dea... vs 8675309..."
 

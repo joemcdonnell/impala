@@ -17,10 +17,7 @@
 
 import logging
 
-from tests.common.test_dimensions import (
-    TableFormatInfo,
-    get_dataset_from_workload,
-    load_table_info_dimension)
+from tests.common.test_dimensions import TableFormatInfo, get_dataset_from_workload
 from tests.performance.query_executor import (
     HiveHS2QueryConfig,
     ImpalaHS2QueryConfig,
@@ -36,15 +33,15 @@ LOG = logging.getLogger('workload_runner')
 
 
 class WorkloadRunner(object):
-  """Runs query files and captures results from the specified workload(s)
+  """Runs query files and captures results from the specified workload
 
   The usage is:
    1) Initialize WorkloadRunner with desired execution parameters.
    2) Call workload_runner.run()
 
-   Internally, for each workload, this module looks up and parses that workload's
-   query files and reads the workload's test vector to determine what combination(s)
-   of file format / compression to run with.
+   Internally, this module looks up and parses the workload's query files and runs
+   them against the single table format (file format / compression) specified in the
+   config.
 
   Args:
     workload (Workload)
@@ -57,7 +54,7 @@ class WorkloadRunner(object):
     config (WorkloadConfig)
     exit_on_error (boolean)
     results (list of ImpalaQueryResult)
-    _test_vectors (list of ?)
+    _test_vector (TableFormatInfo)
   """
 
   def __init__(self, workload, scale_factor, config):
@@ -66,28 +63,18 @@ class WorkloadRunner(object):
     self.config = config
     self.exit_on_error = not self.config.continue_on_query_error
     if self.config.verbose: LOG.setLevel(level=logging.DEBUG)
-    self._generate_test_vectors()
+    self._generate_test_vector()
     self._results = list()
 
   @property
   def results(self):
     return self._results
 
-  def _generate_test_vectors(self):
-    """Generate test vector objects
-
-    If the user has specified a set for table_formats, generate them, otherwise generate
-    vectors for all table formats within the specified exploration strategy.
-    """
-    self._test_vectors = []
-    if self.config.table_formats:
-      dataset = get_dataset_from_workload(self.workload.name)
-      for tf in self.config.table_formats:
-        self._test_vectors.append(TableFormatInfo.create_from_string(dataset, tf))
-    else:
-      vectors = load_table_info_dimension(self.workload.name,
-          self.config.exploration_strategy)
-      self._test_vectors = [vector.value for vector in vectors]
+  def _generate_test_vector(self):
+    """Generate the test vector object for the table format in the config."""
+    dataset = get_dataset_from_workload(self.workload.name)
+    self._test_vector = TableFormatInfo.create_from_string(
+        dataset, self.config.table_format)
 
   def _create_executor(self, executor_name):
     query_options = {
@@ -143,10 +130,9 @@ class WorkloadRunner(object):
 
   def run(self):
     """
-    Runs the workload against all test vectors serially and stores the results.
+    Runs the workload against the table format and stores the results.
     """
-    for test_vector in self._test_vectors:
-      # Transform the query strings to Query objects for a combination of scale factor and
-      # the test vector.
-      queries = self.workload.construct_queries(test_vector, self.scale_factor)
-      self._execute_queries(queries)
+    # Transform the query strings to Query objects for a combination of scale factor and
+    # the test vector.
+    queries = self.workload.construct_queries(self._test_vector, self.scale_factor)
+    self._execute_queries(queries)
