@@ -25,6 +25,9 @@
 #     table format.
 #   - Pretty prints the results of each query's execution.
 #   - Stores the execution details in JSON format, keyed by workload and scale factor.
+#   - Optionally writes each query execution's runtime profile to a text file in the
+#     directory specified by --profile_dir, limited per query (and per client) by
+#     --max_profiles.
 #
 
 import argparse
@@ -66,6 +69,17 @@ parser.add_argument("--exec_options", default=str(),
 parser.add_argument("--results_json_file",
                     default=os.environ['IMPALA_HOME'] + "/benchmark_results.json",
                     help="The output file where benchmark results are saved")
+parser.add_argument("--profile_dir", default=None,
+                    help=("If set, the runtime profile of each query execution is "
+                          "written to a text file in this directory, named "
+                          "[query name]_iter[NNN].txt, or "
+                          "[query name]_client[C]_iter[NNN].txt if --num_clients is "
+                          "greater than 1"))
+parser.add_argument("--max_profiles", type=int, default=None,
+                    help=("Maximum number of runtime profiles to write per query (per "
+                          "client, if --num_clients is greater than 1) when "
+                          "--profile_dir is set. The profiles from the first N "
+                          "executions of each query are kept. Default: no limit"))
 parser.add_argument("-i", "--query_iterations", type=int, default=1,
                     help="Number of times to run each query within a workload")
 parser.add_argument("-x", "--workload_iterations", type=int, default=1,
@@ -180,6 +194,33 @@ def print_result_summary(results):
   if failed_results: prettytable_print(failed_results, failed=True)
 
 
+def write_profiles(results, profile_dir, max_profiles=None, num_clients=1):
+  """Write the runtime profile of each result to a text file in 'profile_dir'.
+
+  Files are named '[query name]_iter[NNN].txt', where NNN counts the executions of that
+  query in the order they appear in 'results'. If 'num_clients' is greater than one,
+  the files are named '[query name]_client[C]_iter[NNN].txt' and NNN counts the
+  executions of that query by client C. This keeps the names deterministic, because
+  the interleaving of the clients' results is not. If 'max_profiles' is not None, only
+  the profiles from the first 'max_profiles' executions of each query (by each client)
+  are written.
+  """
+  os.makedirs(profile_dir, exist_ok=True)
+  iter_num = {}
+  for result in results:
+    query_name = result.query.name
+    if num_clients > 1:
+      query_name = "{}_client{}".format(query_name, result.client_name)
+    iter_num[query_name] = iter_num.get(query_name, 0) + 1
+    if max_profiles is not None and iter_num[query_name] > max_profiles: continue
+    file_name = "{}_iter{:03d}.txt".format(query_name, iter_num[query_name])
+    # Hive results do not have a runtime profile.
+    profile = getattr(result, "runtime_profile", str())
+    with open(os.path.join(profile_dir, file_name), "w", encoding="utf-8",
+              errors="backslashreplace") as f:
+      f.write(profile)
+
+
 def get_workload_scale_factor():
   """Extract the workload name and scale factor from the command line
 
@@ -228,6 +269,9 @@ def _validate_options():
   if options.exec_engine.lower() == "hive" and options.client_type != "hs2":
     raise RuntimeError("The only supported client type for Hive engine is hs2")
 
+  if options.max_profiles is not None and options.max_profiles < 0:
+    raise RuntimeError("--max_profiles must not be negative")
+
   # The list of Impalads must be provided as a comma separated list of either host:port
   # combination or just host.
   for impalad in split_and_strip(options.impalads):
@@ -269,6 +313,10 @@ if __name__ == "__main__":
     print("\nWorkload: {0}, Scale Factor: {1}\n".format(
         workload_runner.workload.name.upper(), workload_runner.scale_factor))
     print_result_summary(workload_runner.results)
+
+    if options.profile_dir:
+      write_profiles(workload_runner.results, options.profile_dir,
+                     options.max_profiles, options.num_clients)
 
   # Store the results
   with open(options.results_json_file, 'w') as f:
