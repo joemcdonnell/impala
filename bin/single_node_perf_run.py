@@ -77,11 +77,13 @@
 #   --ninja               use ninja, rather than Make, as the build tool
 #   --exec_options        query exec option string to run workload
 #                         (formatted as 'opt1:val1;opt2:val2')
+#   --max_profiles=MAX_PROFILES
+#                         maximum number of runtime profiles to keep per query
+#                         (the first N iterations). Default: no limit
 
 from tempfile import mkdtemp
 
 import argparse
-import json
 import os
 import pipes
 import shutil
@@ -175,7 +177,8 @@ def run_workload(base_dir, phase, git_hash, workload, table_format, workload_nam
   """Runs a single combination of workload and table format with the given options.
 
   The 'workload_name' identifies the combination and is incorporated into the
-  output filename (e.g. ${base_dir}/[phase]_[git_hash]_[workload_name].json")
+  output filenames and directories
+  (e.g. ${base_dir}/[phase]_[git_hash]_[workload_name].json")
   """
   impalads = ",".join(["localhost:{0}".format(21050 + i)
                        for i in range(0, int(options.num_impalads))])
@@ -185,6 +188,7 @@ def run_workload(base_dir, phase, git_hash, workload, table_format, workload_nam
   cmd += ["--workload={0}:{1}".format(workload, options.scale),
           "--impalads={0}".format(impalads),
           "--results_json_file={0}/{1}.json".format(base_dir, workload_run_id),
+          "--profile_dir={0}/{1}_profiles".format(base_dir, workload_run_id),
           "--query_iterations={0}".format(options.iterations),
           "--table_format={0}".format(table_format),
           "--plan_first"]
@@ -194,6 +198,9 @@ def run_workload(base_dir, phase, git_hash, workload, table_format, workload_nam
 
   if options.query_names:
     cmd += ["--query_names={0}".format(options.query_names)]
+
+  if options.max_profiles is not None:
+    cmd += ["--max_profiles={0}".format(options.max_profiles)]
 
   configured_call(cmd)
 
@@ -240,11 +247,9 @@ def compare(base_dir, hash_a, hash_b, workload_name):
   description = "{0} vs {1}".format(hash_a, hash_b)
   report_benchmark_results(file_a, file_b, description, workload_name)
 
-  # From the two json files extract the profiles and diff them
+  # Diff the runtime profiles written by run-workload.py
   diff_file = os.path.join(
       IMPALA_HOME, "performance_result_profile_diff_{0}.txt".format(workload_name))
-  generate_profile_files(file_a, a_workload_run_id, base_dir)
-  generate_profile_files(file_b, b_workload_run_id, base_dir)
   with open(diff_file, "w") as f:
     # This does not check that the diff command succeeds
     a_profile_dir = os.path.join(base_dir, a_workload_run_id + "_profiles")
@@ -260,33 +265,6 @@ def compare_all(base_dir, hash_a, hash_b, options):
   """
   for _, _, workload_name in get_combinations(options):
     compare(base_dir, hash_a, hash_b, workload_name)
-
-
-def generate_profile_files(name, prefix, base_dir):
-  """Extracts runtime profiles from the JSON file 'name'.
-
-  Writes the runtime profiles back as separated simple text file in '[prefix]_profiles'
-  dir in base_dir.
-  """
-  profile_dir = os.path.join(base_dir, prefix + "_profiles")
-  if not os.path.exists(profile_dir):
-    os.makedirs(profile_dir)
-  with open(name, 'rb') as fid:
-    data = json.loads(fid.read().decode("utf-8", "ignore"))
-    iter_num = {}
-    # For each query
-    for key in data:
-      for iteration in data[key]:
-        query_name = iteration["query"]["name"]
-        if query_name in iter_num:
-          iter_num[query_name] += 1
-        else:
-          iter_num[query_name] = 1
-        curr_iter = iter_num[query_name]
-
-        file_name = "{}_iter{:03d}.txt".format(query_name, curr_iter)
-        with open(os.path.join(profile_dir, file_name), "w") as out:
-          out.write(iteration["runtime_profile"])
 
 
 def backup_workloads():
@@ -418,6 +396,9 @@ def parse_options():
   parser.add_argument("--exec_options",
                       help=("Query exec option string to run workload (formatted as "
                         "'opt1:val1;opt2:val2')"))
+  parser.add_argument("--max_profiles", type=int,
+                      help="maximum number of runtime profiles to keep per query (the "
+                      "first N iterations). Default: no limit")
 
   options = parser.parse_args()
 
