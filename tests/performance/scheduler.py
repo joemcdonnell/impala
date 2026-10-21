@@ -124,6 +124,8 @@ class Scheduler(object):
                        (query_name, i + 1, query_executor.result.time_taken))
               result = query_executor.result
               result.client_name = thread_num + 1
+              result.workload_iteration = j + 1
+              result.query_iteration = i + 1
               self._results.append(result)
               workload_time_sec += query_executor.result.time_taken
       if self.query_iterations == 1:

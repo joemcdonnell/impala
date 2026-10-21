@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+import csv
 import json
 import os
 from subprocess import check_output, run
@@ -119,3 +120,35 @@ class TestRunWorkload(BaseTestSuite):
         'TPCH-Q1_client{0}_iter{1:03d}.txt'.format(client, i)
         for client in (1, 2) for i in (1, 2)]
     assert [len(v) for v in results.values()] == [6]
+
+  def _run_with_csv(self, tmp_path, *extra_args):
+    """Runs TPCH-Q1 with --results_csv_file and returns the header and the rows."""
+    csv_file = tmp_path / 'runtimes.csv'
+    check_output(self._generate_run_workload_cmd(
+        '--results_csv_file={0}'.format(csv_file),
+        '--results_json_file={0}'.format(tmp_path / 'results.json'), *extra_args),
+        universal_newlines=True)
+    with open(csv_file, newline='') as f:
+      rows = list(csv.reader(f))
+    return rows[0], rows[1:]
+
+  def test_results_csv_file(self, tmp_path):
+    """Test that --results_csv_file writes a row per workload iteration with a column
+    per query iteration."""
+    header, rows = self._run_with_csv(
+        tmp_path, '--query_iterations=3', '--workload_iterations=2')
+    assert header == ['workload', 'scale_factor', 'table_format', 'query', 'client',
+        'workload_iteration', 'iter_1', 'iter_2', 'iter_3']
+    assert [row[:6] for row in rows] == [
+        ['tpch', '', 'text/none/none', 'TPCH-Q1', '1', str(i)] for i in (1, 2)]
+    assert all(float(t) > 0 for row in rows for t in row[6:])
+
+  def test_results_csv_file_multiple_clients(self, tmp_path):
+    """Test that --results_csv_file has separate rows for each client and workload
+    iteration."""
+    header, rows = self._run_with_csv(
+        tmp_path, '--query_iterations=2', '--workload_iterations=2', '--num_clients=2')
+    assert header[6:] == ['iter_1', 'iter_2']
+    assert [row[3:6] for row in rows] == [
+        ['TPCH-Q1', str(client), str(i)] for client in (1, 2) for i in (1, 2)]
+    assert all(float(t) > 0 for row in rows for t in row[6:])

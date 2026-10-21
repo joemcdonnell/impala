@@ -240,6 +240,7 @@ def run_workload(base_dir, phase, git_hash, workload, table_format, workload_nam
   cmd += ["--workload={0}:{1}".format(workload, options.scale),
           "--impalads={0}".format(impalads),
           "--results_json_file={0}/{1}.json".format(base_dir, workload_run_id),
+          "--results_csv_file={0}/{1}.csv".format(base_dir, workload_run_id),
           "--profile_dir={0}/{1}_profiles".format(base_dir, workload_run_id),
           "--query_iterations={0}".format(options.iterations),
           "--table_format={0}".format(table_format),

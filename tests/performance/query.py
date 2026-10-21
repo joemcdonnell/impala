@@ -85,6 +85,9 @@ class HiveQueryResult(object):
       summary (str): query exection summary (ex. returned 10 rows)
       data (list of str): Query results returned by Impala.
       success (bool): True if the execution was successful.
+      workload_iteration (int): The 1-based workload iteration of this execution.
+      query_iteration (int): The 1-based iteration of this execution within the
+          workload iteration.
 
   Attributes - these are modified by another class:
     query_error (str): Empty string if the query succeeded. Error returned by the client
@@ -100,6 +103,8 @@ class HiveQueryResult(object):
     self.start_time = kwargs.get('start_time')
     self.query_config = kwargs.get('query_config')
     self.client_name = kwargs.get('client_name')
+    self.workload_iteration = kwargs.get('workload_iteration')
+    self.query_iteration = kwargs.get('query_iteration')
     self.success = kwargs.get('success', False)
     self.query_error = str()
     self.executor_name = str()

@@ -25,12 +25,15 @@
 #     table format.
 #   - Pretty prints the results of each query's execution.
 #   - Stores the execution details in JSON format, keyed by workload and scale factor.
+#   - Optionally writes the run times to a CSV file (--results_csv_file), with a row per
+#     query, client and workload iteration, and a column per query iteration.
 #   - Optionally writes each query execution's runtime profile to a text file in the
 #     directory specified by --profile_dir, limited per query (and per client) by
 #     --max_profiles.
 #
 
 import argparse
+import csv
 import getpass
 import json
 import logging
@@ -69,6 +72,11 @@ parser.add_argument("--exec_options", default=str(),
 parser.add_argument("--results_json_file",
                     default=os.environ['IMPALA_HOME'] + "/benchmark_results.json",
                     help="The output file where benchmark results are saved")
+parser.add_argument("--results_csv_file", default=None,
+                    help=("If set, the run time of each query execution is written to "
+                          "this CSV file. There is a row per query, client id, and "
+                          "workload iteration. Each row has a column per query "
+                          "iteration. Failed executions are left blank"))
 parser.add_argument("--profile_dir", default=None,
                     help=("If set, the runtime profile of each query execution is "
                           "written to a text file in this directory, named "
@@ -194,7 +202,8 @@ def print_result_summary(results):
   if failed_results: prettytable_print(failed_results, failed=True)
 
 
-def write_profiles(results, profile_dir, max_profiles=None, num_clients=1):
+def write_profiles(results, profile_dir, max_profiles=None, num_clients=1,
+                   query_iterations=1):
   """Write the runtime profile of each result to a text file in 'profile_dir'.
 
   Files are named '[query name]_iter[NNN].txt', where NNN counts the executions of that
@@ -212,6 +221,13 @@ def write_profiles(results, profile_dir, max_profiles=None, num_clients=1):
     if num_clients > 1:
       query_name = "{}_client{}".format(query_name, result.client_name)
     iter_num[query_name] = iter_num.get(query_name, 0) + 1
+    # The counter must agree with the iteration numbers recorded by the scheduler.
+    expected_iter = (result.workload_iteration - 1) * query_iterations + \
+        result.query_iteration
+    assert iter_num[query_name] == expected_iter, (
+        "Execution {} of {} is workload iteration {}, query iteration {}".format(
+            iter_num[query_name], query_name, result.workload_iteration,
+            result.query_iteration))
     if max_profiles is not None and iter_num[query_name] > max_profiles: continue
     file_name = "{}_iter{:03d}.txt".format(query_name, iter_num[query_name])
     # Hive results do not have a runtime profile.
@@ -219,6 +235,32 @@ def write_profiles(results, profile_dir, max_profiles=None, num_clients=1):
     with open(os.path.join(profile_dir, file_name), "w", encoding="utf-8",
               errors="backslashreplace") as f:
       f.write(profile)
+
+
+def write_runtimes_csv(results, csv_file, workload_name, scale_factor):
+  """Write the run times of the results to 'csv_file'.
+
+  There is one row per (table format, query, client, workload iteration) and the
+  columns are 'workload', 'scale_factor', 'table_format', 'query', 'client' and
+  'workload_iteration', followed by 'iter_N' for the Nth execution of the query within
+  that workload iteration. Executions that failed are left blank.
+  """
+  runtimes = {}
+  for result in results:
+    key = (result.query.table_format_str, result.query.name, result.client_name,
+        result.workload_iteration)
+    # Using a dictionary for the query iterations allows it to work regardless of
+    # ordering.
+    runtimes.setdefault(key, {})[result.query_iteration] = (
+        result.time_taken if result.success else "")
+  num_iters = max([max(times) for times in runtimes.values()], default=0)
+  with open(csv_file, "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["workload", "scale_factor", "table_format", "query", "client",
+        "workload_iteration"] + ["iter_{}".format(i) for i in range(1, num_iters + 1)])
+    for key in sorted(runtimes):
+      writer.writerow([workload_name, scale_factor] + list(key) +
+          [runtimes[key].get(i, "") for i in range(1, num_iters + 1)])
 
 
 def get_workload_scale_factor():
@@ -314,9 +356,14 @@ if __name__ == "__main__":
         workload_runner.workload.name.upper(), workload_runner.scale_factor))
     print_result_summary(workload_runner.results)
 
+    if options.results_csv_file:
+      write_runtimes_csv(workload_runner.results, options.results_csv_file,
+                         workload_runner.workload.name, workload_runner.scale_factor)
+
     if options.profile_dir:
       write_profiles(workload_runner.results, options.profile_dir,
-                     options.max_profiles, options.num_clients)
+                     options.max_profiles, options.num_clients,
+                     options.query_iterations)
 
   # Store the results
   with open(options.results_json_file, 'w') as f:
