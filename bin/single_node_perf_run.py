@@ -85,6 +85,10 @@
 #   --ninja               use ninja, rather than Make, as the build tool
 #   --exec_options        query exec option string to run workload
 #                         (formatted as 'opt1:val1;opt2:val2')
+#   --drop_caches_level   drop the OS page cache (requires sudo) before starting
+#                         the impalads for each run
+#   --compact_memory      trigger kernel memory compaction (requires sudo)
+#                         before starting the impalads for each run
 #   --max_profiles=MAX_PROFILES
 #                         maximum number of runtime profiles to keep per query
 #                         (the first N iterations). Default: no limit
@@ -165,6 +169,35 @@ def get_cluster_size(options):
   if options.use_exclusive_coordinators:
     return options.num_impalads + options.num_coordinators
   return options.num_impalads
+
+
+def stop_impala():
+  configured_call(["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME),
+                   "--kill_only"])
+
+
+def drop_caches(level):
+  """Drops the OS page cache (but not inodes/dentries)."""
+  subprocess.check_call(["sync"], env={})
+  subprocess.check_call(["sudo", "sh", "-c",
+      "echo {0} > /proc/sys/vm/drop_caches".format(level)], env={})
+
+
+def compact_memory():
+  """Asks the kernel to compact memory (defragment physical memory)."""
+  subprocess.check_call(["sudo", "sh", "-c", "echo 1 > /proc/sys/vm/compact_memory"],
+                        env={})
+
+
+def reset_os_state(options):
+  """Applies the requested OS state resets (dropping the OS buffer cache and/or
+  compacting memory)."""
+  # Clearing the OS buffer cache should come first, as it may make memory availabe
+  # for compaction.
+  if options.drop_caches_level and options.drop_caches_level != 0:
+    drop_caches(options.drop_caches_level)
+  if options.compact_memory:
+    compact_memory()
 
 
 def start_impala(options):
@@ -326,6 +359,7 @@ def perf_ab_test(options, args):
 
   if options.start_minicluster:
     start_minicluster()
+  reset_os_state(options)
   start_impala(options)
 
   workloads = options.workloads.split(",")
@@ -345,6 +379,11 @@ def perf_ab_test(options, args):
     for dataset in datasets:
       load_data(dataset, options.table_formats, options.scale)
 
+  # Restart Impalads after dataload (and optionally drop caches, etc)
+  stop_impala()
+  reset_os_state(options)
+  start_impala(options)
+
   run_workloads(temp_dir, "a", options)
 
   if len(args) > 1 and args[1]:
@@ -352,8 +391,10 @@ def perf_ab_test(options, args):
     # discard any changes created by the previous restore_workloads()
     shutil.rmtree("testdata/workloads")
     run_git(["checkout", "--", "testdata/workloads"])
+    stop_impala()
     build(hash_b, options)
     restore_workloads(workload_dir)
+    reset_os_state(options)
     start_impala(options)
     run_workloads(temp_dir, "b", options)
     compare_all(temp_dir, hash_a, hash_b, options)
@@ -414,6 +455,15 @@ def parse_options():
                       help="load databases for the chosen workloads")
   parser.add_argument("--start_minicluster", action="store_true",
                       help="start a new Hadoop minicluster")
+  parser.add_argument("--drop_caches_level", default=None, type=int, choices=[0, 1, 2, 3],
+                      help="If specified, drop Linux caches at this level (writing to "
+                      "/proc/sys/vm/drop_caches) before starting the Impala cluster. If "
+                      "not set or set to 0, don't drop the caches. Requires passwordless "
+                      "sudo access.")
+  parser.add_argument("--compact_memory", default=False, action="store_true",
+                      help="Compact Linux memory by writing 1 to "
+                      "/proc/sys/vm/compact_memory before starting the Impala cluster. "
+                      "Requires passwordless sudo access.")
   parser.add_argument("--ninja", action="store_true",
                       help="use ninja, rather than Make, as the build tool")
   parser.add_argument("--impalad_args", action="append", default=[],
