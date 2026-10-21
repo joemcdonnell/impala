@@ -67,7 +67,15 @@
 #                         comma-separated list of table formats. Default:
 #                         parquet/none
 #   --num_impalads=NUM_IMPALADS
-#                         number of impalads. Default: 1
+#                         number of executor impalads. Default: 1
+#   --num_coordinators=NUM_COORDINATORS
+#                         number of coordinators. Without
+#                         --use_exclusive_coordinators, the coordinators are
+#                         also executors and must not exceed --num_impalads.
+#                         Default: 1
+#   --use_exclusive_coordinators
+#                         coordinators do not execute fragments. They are
+#                         started in addition to --num_impalads executors.
 #   --query_names=QUERY_NAMES
 #                         comma-separated list of regular expressions. A query
 #                         is executed if it matches any regular expression in
@@ -151,10 +159,21 @@ def start_minicluster():
   configured_call(["{0}/testdata/bin/run-all.sh".format(IMPALA_HOME)])
 
 
-def start_impala(num_impalads, options):
-  configured_call(["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME), "-s",
-                   str(num_impalads), "-c", str(num_impalads)]
-                  + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
+def get_cluster_size(options):
+  """Returns the total number of impalads to start. Exclusive coordinators are in
+  addition to the --num_impalads executors."""
+  if options.use_exclusive_coordinators:
+    return options.num_impalads + options.num_coordinators
+  return options.num_impalads
+
+
+def start_impala(options):
+  cmd = ["{0}/bin/start-impala-cluster.py".format(IMPALA_HOME), "-s",
+         str(get_cluster_size(options)), "-c", str(options.num_coordinators)]
+  if options.use_exclusive_coordinators:
+    cmd += ["--use_exclusive_coordinators"]
+  configured_call(
+      cmd + ["--impalad_args={0}".format(arg) for arg in options.impalad_args])
 
 
 def get_combinations(options):
@@ -181,7 +200,7 @@ def run_workload(base_dir, phase, git_hash, workload, table_format, workload_nam
   (e.g. ${base_dir}/[phase]_[git_hash]_[workload_name].json")
   """
   impalads = ",".join(["localhost:{0}".format(21050 + i)
-                       for i in range(0, int(options.num_impalads))])
+                       for i in range(0, options.num_coordinators)])
 
   workload_run_id = get_workload_run_id(phase, git_hash, workload_name)
   cmd = ["{0}/bin/run-workload.py".format(IMPALA_HOME)]
@@ -307,7 +326,7 @@ def perf_ab_test(options, args):
 
   if options.start_minicluster:
     start_minicluster()
-  start_impala(options.num_impalads, options)
+  start_impala(options)
 
   workloads = options.workloads.split(",")
 
@@ -335,7 +354,7 @@ def perf_ab_test(options, args):
     run_git(["checkout", "--", "testdata/workloads"])
     build(hash_b, options)
     restore_workloads(workload_dir)
-    start_impala(options.num_impalads, options)
+    start_impala(options)
     run_workloads(temp_dir, "b", options)
     compare_all(temp_dir, hash_a, hash_b, options)
 
@@ -380,7 +399,13 @@ def parse_options():
   parser.add_argument("--table_formats", default="parquet/none", help="comma-separated "
                       "list of table formats. Default: parquet/none")
   parser.add_argument("--num_impalads", type=int, default=1,
-                      help="number of impalads. Default: 1")
+                      help="number of executor impalads. Default: 1")
+  parser.add_argument("--num_coordinators", type=int, default=1,
+                      help="number of coordinators. Queries are sent only to the "
+                      "coordinators. Default: 1")
+  parser.add_argument("--use_exclusive_coordinators", action="store_true",
+                      help="coordinators do not execute fragments and are started in "
+                      "addition to --num_impalads executors")
   # Less commonly-used options:
   parser.add_argument("--query_names",
                       help="comma-separated list of regular expressions. A query is "
@@ -401,6 +426,13 @@ def parse_options():
                       "first N iterations). Default: no limit")
 
   options = parser.parse_args()
+
+  if options.num_coordinators < 1:
+    parser.error("--num_coordinators must be at least 1")
+  if (not options.use_exclusive_coordinators
+      and options.num_coordinators > options.num_impalads):
+    parser.error("--num_coordinators cannot exceed --num_impalads unless "
+                 "--use_exclusive_coordinators is set")
 
   args = [options.git_hash_A]
   if options.git_hash_B:
