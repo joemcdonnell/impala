@@ -1117,6 +1117,14 @@ enum TImpalaQueryOptions {
   // The constant value was chosen arbitrarily to not be "too high" or "too low".
   // TODO: Compute stats for nested types and pick them up.
   AVG_COLLECTION_SIZE = 206
+
+  // The number of build workers per host used to build the hash tables of a broadcast
+  // partitioned hash join with a shared build (requires MT_DOP > 0). Each worker is a
+  // join build fragment instance that owns a disjoint subset of the 16 hash join
+  // partitions. A value of 0 or 1 disables parallel build (one build instance per host).
+  // Values larger than 16 are capped at 16. Joins that cannot use it (e.g. null-aware
+  // anti joins) ignore this option.
+  PARALLEL_BROADCAST_JOIN_BUILD = 207
 }
 
 // The summary of a DML statement.

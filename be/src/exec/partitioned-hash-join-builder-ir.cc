@@ -54,13 +54,17 @@ Status PhjBuilder::ProcessBuildBatch(
       }
       continue;
     }
+    const uint32_t hash = expr_vals_cache->CurExprValuesHash();
+    const uint32_t partition_idx = hash >> (32 - NUM_PARTITIONING_BITS);
+    // With a parallel build, this builder only stores the partitions it owns. Other
+    // rows are processed by the workers that own their partitions. The mask only
+    // restricts level 0 partitioning, it is all ones for repartitioning.
+    if (UNLIKELY(((owned_partitions_mask_ >> partition_idx) & 1) == 0)) continue;
     if (build_filters) {
       DCHECK_EQ(ctx->level(), 0)
           << "Runtime filters should not be built during repartitioning.";
       InsertRuntimeFilters(filter_ctxs_.data(), build_row);
     }
-    const uint32_t hash = expr_vals_cache->CurExprValuesHash();
-    const uint32_t partition_idx = hash >> (32 - NUM_PARTITIONING_BITS);
     PhjBuilderPartition* partition = hash_partitions_[partition_idx].get();
     if (UNLIKELY(!AppendRow(partition->build_rows(), build_row, &status))) {
       return status;

@@ -20,6 +20,7 @@
 
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <boost/scoped_ptr.hpp>
@@ -42,6 +43,7 @@ namespace impala {
 class CyclicBarrier;
 class PhjBuilder;
 class PhjBuilderPartition;
+class UniqueIdPB;
 class RowDescriptor;
 class RuntimeState;
 class ScalarExpr;
@@ -391,6 +393,19 @@ class PhjBuilder : public JoinBuilder {
   /// Not valid to call on a separate join build.
   void Reset(RowBatch* row_batch);
 
+  /// True if this builder is one of several build workers on this host that cooperate
+  /// to build one shared set of hash partitions (see PARALLEL_BROADCAST_JOIN_BUILD).
+  /// Each worker is a separate fragment instance and owns a disjoint subset of the
+  /// PARTITION_FANOUT level-0 partitions: partition 'p' is owned by worker
+  /// 'p % num_build_workers_'. Workers only store and build the partitions they own.
+  /// The worker with index 0 is the leader: it is the only builder that probe fragment
+  /// instances see. When all workers have built their partitions, the leader takes
+  /// over their partitions, publishes the runtime filters and hands off to the probes.
+  /// The workers stay alive (blocked in Close()) until the leader is closed, because
+  /// the partitions they built continue to reference the worker that built them.
+  bool IsParallelBuild() const { return num_build_workers_ > 1; }
+  bool IsBuildLeader() const { return build_worker_idx_ == 0; }
+
   /// Represents a set of hash partitions to be handed off to the probe side.
   struct HashPartitions {
     HashPartitions() { Reset(); }
@@ -652,6 +667,38 @@ class PhjBuilder : public JoinBuilder {
   /// tables, either PARTITIONING_PROBE or REPARTITIONING_PROBE.
   Status BuildHashTablesAndReserveProbeBuffers(HashJoinState next_state);
 
+  /// Parallel build: finishes the build on a worker (including the leader) for the
+  /// partitions that this builder owns: marks the streams done and builds the hash
+  /// tables. Closes the partitions that are empty, which includes all non-owned
+  /// partitions. Returns an error if any owned partition had to spill, which is not yet
+  /// supported for parallel builds.
+  Status BuildOwnedPartitions();
+
+  /// Parallel build: called from FlushFinal() on a worker that is not the leader.
+  /// Builds the owned partitions and tells the leader that this worker is done.
+  Status FinishBuildOnWorker(RuntimeState* state);
+
+  /// Parallel build: called from FlushFinal() on the leader. Builds its own partitions,
+  /// waits for the workers to finish, takes over their partitions, merges their runtime
+  /// filters, publishes the result and hands off to the probes.
+  Status FinishBuildOnLeader(RuntimeState* state);
+
+  /// Parallel build: finds the builder of the fragment instance 'finstance_id'. This
+  /// must not be called during Prepare(), see QueryState::GetFInstanceState().
+  Status LookupBuilder(
+      RuntimeState* state, const UniqueIdPB& finstance_id, PhjBuilder** builder);
+
+  /// Parallel build: called by a worker on the leader's builder when the worker has
+  /// built its partitions (or failed with 'status').
+  void WorkerFinished(const Status& status);
+
+  /// Parallel build: blocks a worker's Close() until the leader no longer references the
+  /// worker's partitions.
+  void WaitForLeaderToReleaseWorker();
+
+  /// Parallel build: merges the local runtime filters of 'worker' into this builder's.
+  void MergeRuntimeFiltersFrom(PhjBuilder* worker);
+
   /// Ensures that 'probe_stream_reservation_' has enough reservation for a stream per
   /// spilled partition in 'hash_partitions_', plus for the input stream if the input
   /// is a spilled partition (determined by 'next_state' - either PARTITIONING_PROBE or
@@ -827,6 +874,36 @@ class PhjBuilder : public JoinBuilder {
   /// Time spent repartitioning and building hash tables of any resulting partitions
   /// that were not spilled.
   RuntimeProfile::Counter* repartition_timer_ = nullptr;
+
+  /// Number of build workers cooperating on this host's build, including this one, and
+  /// the index of this worker among them. 1 and 0 if this is not a parallel build.
+  const int num_build_workers_;
+  const int build_worker_idx_;
+
+  /// Bitmask of the level-0 hash partitions owned by this builder, bit 'p' set if
+  /// partition 'p' is owned. All ones unless this is a worker in a parallel build.
+  /// Used by ProcessBuildBatch() to skip rows that belong to other workers.
+  /// Reset to all ones by the leader once it has taken over the workers' partitions, so
+  /// that repartitioning handles every row.
+  uint32_t owned_partitions_mask_;
+
+  /// Synchronization between the leader and the workers of a parallel build. Used only
+  /// on the leader's builder.
+  std::mutex parallel_build_lock_;
+  ConditionVariable parallel_build_cv_;
+
+  /// Number of workers that have finished building their partitions, and the first
+  /// error any of them hit. Protected by 'parallel_build_lock_'.
+  int num_workers_finished_ = 0;
+  Status worker_status_;
+
+  /// Set by the leader in Close() once it no longer references anything owned by the
+  /// workers. A worker that handed its partitions to the leader must not close
+  /// anything until this is set. Protected by 'parallel_build_lock_'.
+  bool workers_released_ = false;
+
+  /// The leader's builder. Set on workers after they finish their local build.
+  PhjBuilder* leader_ = nullptr;
 
   // Barrier used to synchronize the probe-side threads at synchronization points in the
   // partitioned hash join algorithm. Used only when 'num_probe_threads_' > 1.

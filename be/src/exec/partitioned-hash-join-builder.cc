@@ -17,6 +17,7 @@
 
 #include "exec/partitioned-hash-join-builder.h"
 
+#include <algorithm>
 #include <iomanip>
 #include <numeric>
 
@@ -28,6 +29,7 @@
 #include "exprs/scalar-expr.h"
 #include "runtime/buffered-tuple-stream.h"
 #include "runtime/exec-env.h"
+#include "runtime/fragment-instance-state.h"
 #include "runtime/fragment-state.h"
 #include "runtime/mem-tracker.h"
 #include "runtime/query-state.h"
@@ -42,8 +44,10 @@
 #include "util/min-max-filter.h"
 #include "util/pretty-printer.h"
 #include "util/runtime-profile-counters.h"
+#include "util/uid-util.h"
 
 #include "gen-cpp/PlanNodes_types.h"
+#include "gen-cpp/common.pb.h"
 
 #include "common/names.h"
 
@@ -108,16 +112,22 @@ Status PhjBuilderConfig::InitExprsAndFilters(FragmentState* state,
         filter_desc.applied_on_partition_columns);
     // Skip over filters that are not produced by the instances of the builder, i.e.
     // broadcast filters where this instance was not selected as a filter producer.
+    // The filters produced should be the same for all instances, except that with a
+    // parallel build only the leader produces filters, but the other workers still need
+    // to build partial filters that the leader merges. Therefore build the filter if any
+    // instance on this backend produces it.
     const vector<const TPlanFragmentInstanceCtx*>& instance_ctxs = state->instance_ctxs();
-    // We can pick any instance since the filters produced should be the same for all
-    // instances.
-    const vector<TRuntimeFilterSource>& filters_produced =
-        instance_ctxs[0]->filters_produced;
-    auto it = std::find_if(filters_produced.begin(), filters_produced.end(),
-        [this, &filter_desc](const TRuntimeFilterSource f) {
-          return f.src_node_id == join_node_id_ && f.filter_id == filter_desc.filter_id;
-        });
-    if (it == filters_produced.end()) continue;
+    bool is_produced = false;
+    for (const TPlanFragmentInstanceCtx* instance_ctx : instance_ctxs) {
+      const vector<TRuntimeFilterSource>& filters_produced =
+          instance_ctx->filters_produced;
+      is_produced |= std::any_of(filters_produced.begin(), filters_produced.end(),
+          [this, &filter_desc](const TRuntimeFilterSource& f) {
+            return f.src_node_id == join_node_id_
+                && f.filter_id == filter_desc.filter_id;
+          });
+    }
+    if (!is_produced) continue;
     ScalarExpr* filter_expr;
     RETURN_IF_ERROR(
         ScalarExpr::Create(filter_desc.src_expr, *input_row_desc_, state, &filter_expr));
@@ -156,6 +166,17 @@ Status PhjBuilderConfig::Init(const TDataSink& tsink, const RowDescriptor* input
 
 const char* PhjBuilder::LLVM_CLASS_NAME = "class.impala::PhjBuilder";
 
+static uint32_t OwnedPartitionsMask(int num_build_workers, int build_worker_idx) {
+  DCHECK_GE(num_build_workers, 1);
+  DCHECK_LE(num_build_workers, PhjBuilder::PARTITION_FANOUT);
+  DCHECK_LT(build_worker_idx, num_build_workers);
+  uint32_t mask = 0;
+  for (int p = 0; p < PhjBuilder::PARTITION_FANOUT; ++p) {
+    if (p % num_build_workers == build_worker_idx) mask |= 1U << p;
+  }
+  return mask;
+}
+
 PhjBuilder::PhjBuilder(
     TDataSinkId sink_id, const PhjBuilderConfig& sink_config, RuntimeState* state)
   : JoinBuilder(sink_id, sink_config,
@@ -171,6 +192,11 @@ PhjBuilder::PhjBuilder(
     is_not_distinct_from_(sink_config.is_not_distinct_from_),
     filter_exprs_(sink_config.filter_exprs_),
     hash_table_config_(*sink_config.hash_table_config_),
+    num_build_workers_(state->instance_ctx().__isset.num_build_workers ?
+            state->instance_ctx().num_build_workers : 1),
+    build_worker_idx_(state->instance_ctx().__isset.build_worker_idx ?
+            state->instance_ctx().build_worker_idx : 0),
+    owned_partitions_mask_(OwnedPartitionsMask(num_build_workers_, build_worker_idx_)),
     probe_barrier_(num_probe_threads_ <= 1 ?
             nullptr :
             make_unique<CyclicBarrier>(state->instance_ctx().num_join_build_outputs)),
@@ -209,6 +235,9 @@ PhjBuilder::PhjBuilder(const PhjBuilderConfig& sink_config,
     is_not_distinct_from_(sink_config.is_not_distinct_from_),
     filter_exprs_(sink_config.filter_exprs_),
     hash_table_config_(*sink_config.hash_table_config_),
+    num_build_workers_(1),
+    build_worker_idx_(0),
+    owned_partitions_mask_(OwnedPartitionsMask(1, 0)),
     probe_barrier_(nullptr),
     process_build_batch_fn_(sink_config.process_build_batch_fn_),
     process_build_batch_fn_level0_(sink_config.process_build_batch_fn_level0_),
@@ -370,6 +399,10 @@ void PhjBuilder::DetermineUsefulnessForMinmaxFilters() {
 
 Status PhjBuilder::FlushFinal(RuntimeState* state) {
   SCOPED_TIMER(profile()->total_time_counter());
+  if (IsParallelBuild()) {
+    DCHECK(is_separate_build_);
+    return IsBuildLeader() ? FinishBuildOnLeader(state) : FinishBuildOnWorker(state);
+  }
   return FinalizeBuild(state);
 }
 
@@ -438,9 +471,195 @@ Status PhjBuilder::FinalizeBuild(RuntimeState* state) {
   return Status::OK();
 }
 
+Status PhjBuilder::BuildOwnedPartitions() {
+  DCHECK_EQ(PARTITION_FANOUT, hash_partitions_.size());
+  DCHECK_ENUM_EQ(state_, HashJoinState::PARTITIONING_BUILD);
+  for (const unique_ptr<PhjBuilderPartition>& partition : hash_partitions_) {
+    partition->build_rows()->DoneWriting();
+  }
+  for (int i = 0; i < PARTITION_FANOUT; ++i) {
+    PhjBuilderPartition* partition = hash_partitions_[i].get();
+    if (partition->build_rows()->num_rows() == 0) {
+      // Nothing to build. This is always the case for partitions owned by other workers.
+      partition->Close(nullptr);
+      continue;
+    }
+    DCHECK_NE(0, (owned_partitions_mask_ >> i) & 1) << "Received rows of partition " << i;
+    // TODO: support spilling with a parallel build. The plan is that if any partition
+    // spills, the leader takes over the rest of the build serially.
+    if (partition->is_spilled()) {
+      return Status(Substitute("Join build for join node $0 spilled partition $1 "
+          "while using a parallel join build, which does not support spilling yet. "
+          "Set the PARALLEL_BROADCAST_JOIN_BUILD query option to 1 or increase the "
+          "memory limit.", join_node_id_, i));
+    }
+    bool built = false;
+    RETURN_IF_ERROR(partition->BuildHashTable(&built));
+    if (!built) {
+      return Status(Substitute("Join build for join node $0 could not build the hash "
+          "table for partition $1 in memory while using a parallel join build, which "
+          "does not support spilling yet. Set the PARALLEL_BROADCAST_JOIN_BUILD query "
+          "option to 1 or increase the memory limit.", join_node_id_, i));
+    }
+  }
+  return Status::OK();
+}
+
+Status PhjBuilder::LookupBuilder(
+    RuntimeState* state, const UniqueIdPB& finstance_id, PhjBuilder** builder) {
+  TUniqueId id;
+  UniqueIdPBToTUniqueId(finstance_id, &id);
+  FragmentInstanceState* finstance;
+  // This waits for Prepare() to complete for all fragment instances on this backend.
+  RETURN_IF_ERROR(state->query_state()->GetFInstanceState(id, &finstance));
+  JoinBuilder* join_builder = finstance->GetJoinBuildSink();
+  DCHECK(join_builder != nullptr);
+  *builder = static_cast<PhjBuilder*>(join_builder);
+  return Status::OK();
+}
+
+void PhjBuilder::WorkerFinished(const Status& status) {
+  {
+    lock_guard<mutex> l(parallel_build_lock_);
+    ++num_workers_finished_;
+    if (worker_status_.ok() && !status.ok()) worker_status_ = status;
+  }
+  parallel_build_cv_.NotifyAll();
+}
+
+void PhjBuilder::WaitForLeaderToReleaseWorker() {
+  // 'leader_' is only set if this worker told the leader that it is done, in which case
+  // the leader may have taken over this worker's partitions. If it is not set, nothing
+  // else references this builder.
+  if (leader_ == nullptr) return;
+  unique_lock<mutex> l(leader_->parallel_build_lock_);
+  // Do not wake up for cancellation: the leader is always closed eventually, and it is
+  // not safe to close the partitions before then.
+  while (!leader_->workers_released_) leader_->parallel_build_cv_.Wait(l);
+}
+
+Status PhjBuilder::FinishBuildOnWorker(RuntimeState* state) {
+  DCHECK(IsParallelBuild() && !IsBuildLeader());
+  // Debug action to delay or fail a worker, e.g. to test cancelling a query while the
+  // leader waits for the workers.
+  RETURN_IF_ERROR(DebugAction(state->query_options(), "PHJ_BUILDER_WORKER_FINISH"));
+  Status status = BuildOwnedPartitions();
+  PhjBuilder* leader = nullptr;
+  Status lookup_status = LookupBuilder(
+      state, state->instance_ctx_pb().build_leader_instance_id(), &leader);
+  if (status.ok()) status = lookup_status;
+  if (leader != nullptr) {
+    leader_ = leader;
+    leader->WorkerFinished(status);
+  }
+  return status;
+}
+
+void PhjBuilder::MergeRuntimeFiltersFrom(PhjBuilder* worker) {
+  DCHECK_EQ(filter_ctxs_.size(), worker->filter_ctxs_.size());
+  for (int i = 0; i < filter_ctxs_.size(); ++i) {
+    FilterContext& dst = filter_ctxs_[i];
+    const FilterContext& src = worker->filter_ctxs_[i];
+    if (dst.local_bloom_filter != nullptr) {
+      DCHECK(src.local_bloom_filter != nullptr);
+      dst.local_bloom_filter->Or(*src.local_bloom_filter);
+    } else if (dst.local_min_max_filter != nullptr) {
+      DCHECK(src.local_min_max_filter != nullptr);
+      dst.local_min_max_filter->Or(*src.local_min_max_filter);
+    } else {
+      DCHECK(dst.local_in_list_filter != nullptr);
+      // TODO: merge the in-list filters instead of disabling the filter.
+      dst.local_in_list_filter->SetAlwaysTrue();
+    }
+  }
+}
+
+Status PhjBuilder::FinishBuildOnLeader(RuntimeState* state) {
+  DCHECK(IsParallelBuild() && IsBuildLeader());
+  DCHECK(is_separate_build_);
+  RETURN_IF_ERROR(BuildOwnedPartitions());
+
+  const auto& worker_ids = state->instance_ctx_pb().build_worker_instance_ids();
+  DCHECK_EQ(worker_ids.size(), num_build_workers_ - 1);
+  vector<PhjBuilder*> workers;
+  for (const UniqueIdPB& worker_id : worker_ids) {
+    PhjBuilder* worker;
+    RETURN_IF_ERROR(LookupBuilder(state, worker_id, &worker));
+    workers.push_back(worker);
+  }
+
+  // Wait for the workers to finish building their partitions.
+  state->AddCancellationCV(&parallel_build_lock_, &parallel_build_cv_);
+  {
+    unique_lock<mutex> l(parallel_build_lock_);
+    while (num_workers_finished_ < num_build_workers_ - 1 && !state->is_cancelled()) {
+      SCOPED_TIMER(profile_->inactive_timer());
+      parallel_build_cv_.Wait(l);
+    }
+    if (state->is_cancelled()) return Status::CANCELLED;
+    RETURN_IF_ERROR(worker_status_);
+  }
+
+  // Take over the partitions the workers built and merge their runtime filters. The
+  // partitions keep referring to the worker that built them. The workers do not touch
+  // them any more and stay alive until Close() releases them.
+  for (PhjBuilder* worker : workers) {
+    for (int p = 0; p < PARTITION_FANOUT; ++p) {
+      if (p % num_build_workers_ != worker->build_worker_idx_) continue;
+      DCHECK(hash_partitions_[p]->IsClosed());
+      swap(hash_partitions_[p], worker->hash_partitions_[p]);
+    }
+    MergeRuntimeFiltersFrom(worker);
+  }
+  // Repartitioning and probing handle all the partitions, not just the owned ones.
+  owned_partitions_mask_ = ~0U;
+
+  // Debug action to fail or delay the leader after it took over the workers'
+  // partitions, e.g. to test that the workers that wait to be released are unblocked.
+  RETURN_IF_ERROR(DebugAction(state->query_options(), "PHJ_BUILDER_LEADER_FINISH"));
+
+  int64_t num_build_rows = 0;
+  double largest_fraction = 0.0;
+  for (const unique_ptr<PhjBuilderPartition>& partition : hash_partitions_) {
+    if (!partition->IsClosed()) num_build_rows += partition->build_rows()->num_rows();
+  }
+  if (num_build_rows > 0) {
+    for (const unique_ptr<PhjBuilderPartition>& partition : hash_partitions_) {
+      if (partition->IsClosed()) continue;
+      largest_fraction = max(largest_fraction,
+          partition->build_rows()->num_rows() / static_cast<double>(num_build_rows));
+    }
+    COUNTER_SET(largest_partition_percent_, static_cast<int64_t>(largest_fraction * 100));
+  }
+  VLOG(2) << Substitute("PHJ(node_id=$0) parallel build with $1 workers partitioned "
+      "$2 rows", join_node_id_, num_build_workers_, num_build_rows);
+
+  PublishRuntimeFilters(num_build_rows);
+  non_empty_build_ |= (num_build_rows > 0);
+
+  // No partitions are spilled, so this does not need to reserve anything for probe
+  // buffers, but it keeps the invariants of the serial path.
+  RETURN_IF_ERROR(ReserveProbeBuffers(HashJoinState::PARTITIONING_PROBE));
+  RETURN_IF_ERROR(reservation_manager_.ReleaseUnusedReservation());
+  UpdateState(HashJoinState::PARTITIONING_PROBE);
+  HandoffToProbesAndWait(state);
+  return Status::OK();
+}
+
 void PhjBuilder::Close(RuntimeState* state) {
   if (closed_) return;
+  // The leader may still reference partitions that this worker built. Wait for it to
+  // release them before closing anything that they depend on.
+  if (IsParallelBuild() && !IsBuildLeader()) WaitForLeaderToReleaseWorker();
   CloseAndDeletePartitions(nullptr);
+  if (IsParallelBuild() && IsBuildLeader()) {
+    // All the partitions, including those that the workers built, are closed now.
+    {
+      std::lock_guard<std::mutex> l(parallel_build_lock_);
+      workers_released_ = true;
+    }
+    parallel_build_cv_.NotifyAll();
+  }
   if (ht_ctx_ != nullptr) {
     ht_ctx_->StatsCountersAdd(ht_stats_profile_.get());
     ht_ctx_->Close(state);

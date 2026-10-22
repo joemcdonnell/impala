@@ -125,6 +125,12 @@ struct TPlanFragmentInstanceCtx {
 
   // Number of CTE consumers for a CTE producer instance.
   14: optional i32 num_cte_consumers
+
+  // Number of join build workers sharing one join build on this host, and the index of
+  // this instance among them. Only set for parallel broadcast join builds. See
+  // PARALLEL_BROADCAST_JOIN_BUILD.
+  15: optional i32 num_build_workers
+  16: optional i32 build_worker_idx
 }
 
 

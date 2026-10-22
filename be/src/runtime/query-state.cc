@@ -360,14 +360,23 @@ Status QueryState::InitBufferPoolState() {
 }
 
 // Verifies the filters produced by all instances on the same backend are the same.
+// Build workers other than the leader of a parallel join build never produce filters
+// (the leader merges their partial filters), so they are not compared.
 bool VerifyFiltersProduced(const vector<TPlanFragmentInstanceCtx>& instance_ctxs) {
   int fragment_idx = -1;
+  bool have_first_set = false;
   std::unordered_set<int> first_set;
   for (const TPlanFragmentInstanceCtx& instance_ctx : instance_ctxs) {
-    bool first_instance_of_fragment =
-        fragment_idx == -1 || fragment_idx != instance_ctx.fragment_idx;
-    if (first_instance_of_fragment) {
+    if (instance_ctx.__isset.build_worker_idx && instance_ctx.build_worker_idx > 0) {
+      DCHECK(instance_ctx.filters_produced.empty());
+      continue;
+    }
+    if (fragment_idx != instance_ctx.fragment_idx) {
       fragment_idx = instance_ctx.fragment_idx;
+      have_first_set = false;
+    }
+    if (!have_first_set) {
+      have_first_set = true;
       first_set.clear();
       for (auto f : instance_ctx.filters_produced) first_set.insert(f.filter_id);
     }

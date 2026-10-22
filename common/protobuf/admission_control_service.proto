@@ -58,6 +58,19 @@ message FInstanceExecParamsPB {
   // have all CTE consumers scheduled to it, but some consumers can have more fragment
   // instances (due to mt_dop) than the producer. This is determined during scheduling.
   optional int32 num_cte_consumers = 11;
+
+  // Parallel broadcast join build (see PARALLEL_BROADCAST_JOIN_BUILD). If this is a join
+  // build fragment instance, the number of build workers on this instance's host that
+  // share one join build, and the 0-based index of this instance among them. The
+  // worker with index 0 is the leader: it owns the builder that probe instances use.
+  optional int32 num_build_workers = 12 [default = 1];
+  optional int32 build_worker_idx = 13 [default = 0];
+
+  // Set on build workers with index > 0: the fragment instance id of the leader.
+  optional UniqueIdPB build_leader_instance_id = 14;
+
+  // Set on the leader: fragment instance ids of the other workers (index > 0).
+  repeated UniqueIdPB build_worker_instance_ids = 15;
 }
 
 // Execution parameters for a single backend. Used to construct the
@@ -152,6 +165,12 @@ message FragmentExecParamsPB {
   optional int32 num_hosts = 5;
 
   optional RuntimeFilterAggregatorInfoPB filter_agg_info = 6;
+
+  // For a join build fragment using a parallel broadcast join build, the number of build
+  // workers per host. Instances of the fragment are clustered by host, and each host's
+  // instances are consecutive in 'instances' with the leader (worker index 0) first.
+  // 1 if the fragment does not use a parallel build.
+  optional int32 num_build_workers = 7 [default = 1];
 }
 
 // Enum describing the initialization source of per_backend_mem_to_admit

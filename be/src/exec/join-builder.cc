@@ -43,7 +43,12 @@ JoinBuilder::JoinBuilder(TDataSinkId sink_id, const JoinBuilderConfig& sink_conf
     num_probe_threads_(
         is_separate_build_ ? state->instance_ctx().num_join_build_outputs : 1),
     outstanding_probes_(num_probe_threads_) {
-  DCHECK_GE(outstanding_probes_, 1);
+  // Build workers other than the leader in a parallel build are not used by any probe.
+  // Only the leader is, see PhjBuilder::IsParallelBuild().
+  DCHECK(outstanding_probes_ >= 1
+      || (state->instance_ctx().__isset.build_worker_idx
+             && state->instance_ctx().build_worker_idx > 0))
+      << outstanding_probes_;
 }
 
 JoinBuilder::~JoinBuilder() {

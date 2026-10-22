@@ -189,6 +189,16 @@ void Coordinator::BackendState::SetRpcParams(const DebugOptions& debug_options,
     if (params.num_join_build_outputs() != -1) {
       instance_ctx.__set_num_join_build_outputs(params.num_join_build_outputs());
     }
+    if (params.num_build_workers() > 1) {
+      instance_ctx.__set_num_build_workers(params.num_build_workers());
+      instance_ctx.__set_build_worker_idx(params.build_worker_idx());
+      if (params.has_build_leader_instance_id()) {
+        *instance_ctx_pb->mutable_build_leader_instance_id() =
+            params.build_leader_instance_id();
+      }
+      *instance_ctx_pb->mutable_build_worker_instance_ids() =
+          params.build_worker_instance_ids();
+    }
     if (debug_options.enabled()
         && (debug_options.instance_idx() == -1
                || debug_options.instance_idx() == GetInstanceIdx(params.instance_id()))) {

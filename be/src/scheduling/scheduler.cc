@@ -82,6 +82,11 @@ static const vector<TPlanNodeType::type> SCAN_NODE_TYPES{TPlanNodeType::HDFS_SCA
 // candidates. See GetRemoteExecutorCandidates() for a deeper description.
 static const int MAX_ITERATIONS_PER_EXECUTOR_CANDIDATE = 8;
 
+// Upper bound on the number of build workers per host for a parallel broadcast join
+// build. Each worker owns at least one of the join builder's partitions, so this must
+// not exceed PhjBuilder::PARTITION_FANOUT.
+static const int MAX_JOIN_BUILD_WORKERS = 16;
+
 const string Scheduler::PROFILE_INFO_KEY_PER_HOST_MIN_MEMORY_RESERVATION =
     "Per Host Min Memory Reservation";
 
@@ -1253,21 +1258,50 @@ void Scheduler::CreateCollocatedJoinBuildInstances(
       << "Parent fragment instances must already be created.";
   vector<FInstanceScheduleState>* instance_states = &fragment_state->instance_states;
   bool share_build = fragment.output_sink.join_build_sink.share_build;
+  // Number of build workers per host for a parallel broadcast join build. Only
+  // applicable to hash joins that share the build (broadcast joins) and are not
+  // null-aware, which needs a single builder for its null-aware partition.
+  int num_build_workers = 1;
+  if (share_build && sink.join_op != TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN
+      && fragment.output_sink.type == TDataSinkType::HASH_JOIN_BUILDER) {
+    num_build_workers = max(1,
+        min(MAX_JOIN_BUILD_WORKERS, state->query_options().parallel_broadcast_join_build));
+  }
+  if (num_build_workers > 1) {
+    fragment_state->exec_params->set_num_build_workers(num_build_workers);
+  }
   int per_fragment_instance_idx = 0;
+  // Index in 'instance_states' of the leader of the current host's build workers.
+  int leader_idx = -1;
   for (FInstanceScheduleState& parent_state : join_fragment_state->instance_states) {
     // Share the build if join build sharing is enabled for this fragment and the previous
     // instance was on the same host (instances for a backend are clustered together).
     if (!share_build || instance_states->empty()
         || instance_states->back().krpc_host != parent_state.krpc_host) {
-      UniqueIdPB instance_id = state->GetNextInstanceId();
-      instance_states->emplace_back(instance_id, parent_state.host,
-          parent_state.krpc_host, per_fragment_instance_idx++, *fragment_state);
-      instance_states->back().exec_params.set_num_join_build_outputs(0);
-      *fragment_state->exec_params->add_instances() = instance_id;
+      leader_idx = instance_states->size();
+      for (int worker_idx = 0; worker_idx < num_build_workers; ++worker_idx) {
+        UniqueIdPB instance_id = state->GetNextInstanceId();
+        instance_states->emplace_back(instance_id, parent_state.host,
+            parent_state.krpc_host, per_fragment_instance_idx++, *fragment_state);
+        FInstanceExecParamsPB& worker_pb = instance_states->back().exec_params;
+        worker_pb.set_num_join_build_outputs(0);
+        *fragment_state->exec_params->add_instances() = instance_id;
+        if (num_build_workers > 1) {
+          worker_pb.set_num_build_workers(num_build_workers);
+          worker_pb.set_build_worker_idx(worker_idx);
+          if (worker_idx > 0) {
+            FInstanceExecParamsPB& leader_pb =
+                (*instance_states)[leader_idx].exec_params;
+            *worker_pb.mutable_build_leader_instance_id() = leader_pb.instance_id();
+            *leader_pb.add_build_worker_instance_ids() = instance_id;
+          }
+        }
+      }
     }
+    // Probes consume the build through the leader of the host's build workers.
     JoinBuildInputPB build_input;
     build_input.set_join_node_id(sink.dest_node_id);
-    FInstanceExecParamsPB& pb = instance_states->back().exec_params;
+    FInstanceExecParamsPB& pb = (*instance_states)[leader_idx].exec_params;
     *build_input.mutable_input_finstance_id() = pb.instance_id();
     *parent_state.exec_params.add_join_build_inputs() = build_input;
     VLOG(3) << "Linked join build for node id=" << sink.dest_node_id

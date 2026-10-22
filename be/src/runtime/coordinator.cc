@@ -466,9 +466,17 @@ void Coordinator::AddFilterSource(const FragmentExecParamsPB& src_fragment_param
   // This work was deferred from the IMPALA-4400 change because it provides only
   // incremental performance benefits.
   vector<int> src_idxs;
+  // With a parallel join build, only the leader of each host's build workers publishes
+  // the filter (after merging the workers' partial filters). The leader is the first of
+  // each group of 'num_build_workers' consecutive instances.
+  int num_build_workers = max(1, src_fragment_params.num_build_workers());
+  int instance_pos = 0;
   for (const UniqueIdPB& instance_id : src_fragment_params.instances()) {
-    src_idxs.push_back(GetInstanceIdx(instance_id));
+    if (instance_pos++ % num_build_workers == 0) {
+      src_idxs.push_back(GetInstanceIdx(instance_id));
+    }
   }
+  num_instances = src_idxs.size();
 
   // If this is a broadcast join with only non-local targets, build and publish it
   // on MAX_BROADCAST_FILTER_PRODUCERS instances. If this is not a broadcast join

@@ -883,3 +883,21 @@ TEST(QueryOptions, ResultSpooling) {
     EXPECT_FALSE(ValidateQueryOptions(&options).ok());
   }
 }
+
+TEST(QueryOptions, ParallelBroadcastJoinBuild) {
+  TQueryOptions options;
+  // Disabled by default.
+  EXPECT_EQ(options.parallel_broadcast_join_build, 0);
+  EXPECT_OK(SetQueryOption("parallel_broadcast_join_build", "4", &options, nullptr));
+  EXPECT_EQ(options.parallel_broadcast_join_build, 4);
+  EXPECT_OK(SetQueryOption("PARALLEL_BROADCAST_JOIN_BUILD", "0", &options, nullptr));
+  EXPECT_EQ(options.parallel_broadcast_join_build, 0);
+  // Values above the number of join partitions are accepted and capped by the
+  // scheduler.
+  EXPECT_OK(SetQueryOption("parallel_broadcast_join_build", "64", &options, nullptr));
+  EXPECT_EQ(options.parallel_broadcast_join_build, 64);
+  EXPECT_FALSE(
+      SetQueryOption("parallel_broadcast_join_build", "-1", &options, nullptr).ok());
+  EXPECT_FALSE(
+      SetQueryOption("parallel_broadcast_join_build", "abc", &options, nullptr).ok());
+}

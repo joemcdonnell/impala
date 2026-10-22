@@ -420,6 +420,11 @@ message PlanFragmentInstanceCtxPB {
 
   // List of input join build finstances for joins in this finstance.
   repeated JoinBuildInputPB join_build_inputs = 3;
+
+  // See FInstanceExecParamsPB.build_leader_instance_id and
+  // FInstanceExecParamsPB.build_worker_instance_ids.
+  optional UniqueIdPB build_leader_instance_id = 4;
+  repeated UniqueIdPB build_worker_instance_ids = 5;
 }
 
 // List of host addresses.
