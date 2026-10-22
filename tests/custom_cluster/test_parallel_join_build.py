@@ -54,6 +54,10 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
     """select count(*), sum(id) from functional.alltypes a
        where not exists (select /* +broadcast */ 1 from functional.alltypessmall b
                          where a.id = b.id)""",
+    # Equality on a key with NULLs, which are not added to the hash table.
+    """select count(*), sum(a.id) from functional.alltypesagg a
+       join /* +broadcast */ functional.alltypesagg b on a.tinyint_col = b.tinyint_col
+       where a.id < 300 and b.id < 300""",
     # Null-safe equality, the hash table stores NULLs.
     """select count(*) from functional.alltypesagg a
        join /* +broadcast */ functional.alltypesagg b
@@ -77,7 +81,7 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
     """Returns a map from filter id to the total rows rejected by that filter."""
     rejected = {}
     for filter_id, stats in self.AGGREGATED_FILTER_RE.findall(profile):
-      match = re.search(r"Rows rejected: (\d+)", stats)
+      match = re.search(r"Rows rejected: \S+ \((\d+)\)", stats)
       if match:
         rejected[filter_id] = rejected.get(filter_id, 0) + int(match.group(1))
     return rejected
@@ -110,6 +114,54 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
               "{0} workers, filters={1}: {2}".format(
                   num_workers, runtime_filters, query)
           assert self._num_builders(profile) == self.NUM_HOSTS * num_workers, query
+
+  # Counters print a compact value followed by the exact one: "BuildRows: 1.00K (1000)".
+  BUILD_ROWS_RE = re.compile(r"^\s*- BuildRows: \S+ \((\d+)\)")
+
+  def _total_build_rows(self, profile):
+    """Returns the sum of the rows received by all the join builder instances."""
+    total = 0
+    in_builder = False
+    for line in profile.split("\n"):
+      if BUILDER_PROFILE_RE.search(line):
+        in_builder = True
+      elif in_builder:
+        match = self.BUILD_ROWS_RE.match(line)
+        if match:
+          total += int(match.group(1))
+          in_builder = False
+    return total
+
+  @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
+  def test_rows_are_routed_to_owning_workers(self):
+    """The sender sends each build row only to the worker that owns its partition: the
+    workers of a host receive each build row once between them, instead of every worker
+    receiving all the rows. Rows with NULL keys are sent too (to the first worker)."""
+    queries = [
+      # (query, query that counts the rows sent by the build side)
+      ("""select count(*), sum(a.id) from functional.alltypes a
+          join /* +broadcast */ functional.alltypessmall b on a.id = b.id""",
+       "select count(*) from functional.alltypessmall"),
+      # The build side has NULL keys and duplicates.
+      ("""select count(*) from functional.alltypesagg a
+          join /* +broadcast */ (select tinyint_col from functional.alltypesagg
+                                 where id < 1000) b
+          on a.tinyint_col = b.tinyint_col where a.id < 300""",
+       "select count(*) from functional.alltypesagg where id < 1000"),
+    ]
+    for query, count_query in queries:
+      num_build_rows = int(self.client.execute(count_query).data[0])
+      # Check that the test is meaningful.
+      assert num_build_rows > 0
+      expected, serial_profile = self._run(query, 0, False)
+      assert self._total_build_rows(serial_profile) == self.NUM_HOSTS * num_build_rows
+      for num_workers in [2, 4, 16]:
+        actual, profile = self._run(query, num_workers, False)
+        assert actual.data == expected.data, query
+        assert self._num_builders(profile) == self.NUM_HOSTS * num_workers, query
+        assert self._total_build_rows(profile) == self.NUM_HOSTS * num_build_rows, \
+            "{0} workers: the build rows are not routed to the owning worker".format(
+                num_workers)
 
   @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
   def test_null_aware_anti_join_not_parallel(self):
@@ -171,7 +223,7 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
   ]
 
   PROBE_SCAN_NODE_RE = re.compile(r"^\s*\w+_SCAN_NODE \(id=0\)")
-  ROWS_RETURNED_RE = re.compile(r"^\s*- RowsReturned: (\d+)")
+  ROWS_RETURNED_RE = re.compile(r"^\s*- RowsReturned: \S+ \((\d+)\)")
 
   def _probe_scan_rows_returned(self, profile):
     """Returns the total rows returned by the instances of the probe scan, node 0."""

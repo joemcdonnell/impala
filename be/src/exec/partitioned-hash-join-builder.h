@@ -367,6 +367,23 @@ class PhjBuilder : public JoinBuilder {
 
   using PartitionId = int;
 
+  /// Returns the level 0 partition that a row with the hash value 'hash' belongs to. The
+  /// hash value is computed by HashTableCtx::EvalAndHashBuild() with the join's seed.
+  /// Used by the builder and by the sender of a parallel join build, so that they agree.
+  static uint32_t PartitionIndex(uint32_t hash) {
+    return hash >> (32 - NUM_PARTITIONING_BITS);
+  }
+
+  /// Returns the index of the build worker that owns the level 0 partition
+  /// 'partition_idx' if there are 'num_build_workers' workers per host.
+  static int BuildWorkerForPartition(uint32_t partition_idx, int num_build_workers) {
+    return partition_idx % num_build_workers;
+  }
+
+  /// Returns a bitmask with bit 'p' set for each level 0 partition 'p' owned by the build
+  /// worker 'build_worker_idx' of 'num_build_workers'.
+  static uint32_t OwnedPartitionsMask(int num_build_workers, int build_worker_idx);
+
   // Constructor for separate join build.
   PhjBuilder(
       TDataSinkId sink_id, const PhjBuilderConfig& sink_config, RuntimeState* state);

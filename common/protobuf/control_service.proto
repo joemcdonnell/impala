@@ -368,6 +368,12 @@ message PlanFragmentDestinationPB {
 
   // IP address + port of the KRPC backend service on the destination.
   optional NetworkAddressPB krpc_backend = 3;
+
+  // If the destination is a build worker of a parallel broadcast join build, the number
+  // of workers on the destination's host and the index of the destination among them.
+  // 1 and 0 otherwise. See FInstanceExecParamsPB.
+  optional int32 num_build_workers = 4 [default = 1];
+  optional int32 build_worker_idx = 5 [default = 0];
 }
 
 // Context to collect information that is shared among all instances of a particular plan

@@ -55,7 +55,7 @@ Status PhjBuilder::ProcessBuildBatch(
       continue;
     }
     const uint32_t hash = expr_vals_cache->CurExprValuesHash();
-    const uint32_t partition_idx = hash >> (32 - NUM_PARTITIONING_BITS);
+    const uint32_t partition_idx = PartitionIndex(hash);
     // With a parallel build, this builder only stores the partitions it owns. Other
     // rows are processed by the workers that own their partitions. The mask only
     // restricts level 0 partitioning, it is all ones for repartitioning.

@@ -19,6 +19,7 @@ package org.apache.impala.planner;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.apache.impala.analysis.JoinOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -159,6 +160,7 @@ public class ParallelPlanner {
     List<PlanFragment> inputFragments = new ArrayList<>();
     join.getFragment().collect(isInputFragment, inputFragments);
     Preconditions.checkState(exchNodes.size() == inputFragments.size());
+    setJoinBuildPartitioning(join, inputFragments);
 
     // Create new fragment with JoinBuildSink that consumes the output of the
     // join's rhs input (the one that materializes the build side).
@@ -195,4 +197,26 @@ public class ParallelPlanner {
     createBuildPlans(buildFragment, null);
   }
 
+
+  /**
+   * If the build of 'join' may be done by several build workers per host, tells the
+   * sender that broadcasts the build side how the join hashes its rows, so that it can
+   * send each row only to the worker that owns the row's partition. The sender falls
+   * back to broadcasting every row to every destination if the backend does not use
+   * several workers for the join.
+   * This is only done for hash joins with a shared build that are not null-aware, and
+   * only if the build side is directly the output of a broadcast exchange, because the
+   * join's build expressions must be evaluated over the rows that the sender sends.
+   */
+  private void setJoinBuildPartitioning(JoinNode join, List<PlanFragment> inputFragments) {
+    if (ctx_.getQueryOptions().getParallel_broadcast_join_build() <= 1) return;
+    if (!(join instanceof HashJoinNode) || !join.canShareBuild()) return;
+    if (join.getJoinOp() == JoinOperator.NULL_AWARE_LEFT_ANTI_JOIN) return;
+    if (!(join.getChild(1) instanceof ExchangeNode) || inputFragments.size() != 1) return;
+    DataSink sink = inputFragments.get(0).getSink();
+    if (!(sink instanceof DataStreamSink)) return;
+    DataStreamSink streamSink = (DataStreamSink) sink;
+    if (streamSink.getOutputPartition().isPartitioned()) return;
+    streamSink.setJoinBuildPartitioning((HashJoinNode) join);
+  }
 }

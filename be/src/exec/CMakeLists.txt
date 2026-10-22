@@ -137,6 +137,7 @@ add_library(ExecTests STATIC
   delimited-text-parser-test.cc
   hash-table-test.cc
   incr-stats-util-test.cc
+  partitioned-hash-join-builder-test.cc
   read-write-util-test.cc
   tuple-file-read-write-test.cc
   tuple-text-file-util-test.cc
@@ -147,6 +148,7 @@ add_dependencies(ExecTests gen-deps)
 ADD_UNIFIED_BE_LSAN_TEST(acid-metadata-utils-test ValidWriteIdListTest.*)
 ADD_UNIFIED_BE_LSAN_TEST(zigzag-test ZigzagTest.*)
 ADD_UNIFIED_BE_LSAN_TEST(hash-table-test HashTableTest.*)
+ADD_UNIFIED_BE_LSAN_TEST(partitioned-hash-join-builder-test PhjBuilderTest.*)
 ADD_UNIFIED_BE_LSAN_TEST(delimited-text-parser-test DelimitedTextParser.*)
 ADD_UNIFIED_BE_LSAN_TEST(read-write-util-test ReadWriteUtil.*)
 ADD_UNIFIED_BE_LSAN_TEST(tuple-file-read-write-test TupleFileReadWriteTest.*)

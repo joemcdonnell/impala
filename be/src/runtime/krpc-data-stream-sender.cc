@@ -26,6 +26,7 @@
 #include "common/logging.h"
 #include "common/status-serialization.h"
 #include "codegen/codegen-anyval.h"
+#include "exec/partitioned-hash-join-builder.h"
 #include "codegen/llvm-codegen.h"
 #include "exec/kudu/kudu-util.h"
 #include "exprs/scalar-expr.h"
@@ -41,6 +42,7 @@
 #include "runtime/fragment-state.h"
 #include "runtime/iceberg-position-delete-collector.h"
 #include "runtime/mem-tracker.h"
+#include "runtime/outbound-row-batch.inline.h"
 #include "runtime/raw-value.inline.h"
 #include "runtime/row-batch.h"
 #include "runtime/runtime-state.h"
@@ -97,6 +99,27 @@ Status KrpcDataStreamSenderConfig::Init(
     exchange_hash_seed_ =
         KrpcDataStreamSender::EXCHANGE_HASH_SEED_CONST ^ state->query_id().hi;
   }
+  if (tsink_->stream_sink.__isset.join_build_partitioning) {
+    DCHECK_EQ(partition_type_, TPartitionType::UNPARTITIONED);
+    const TJoinBuildPartitioning& partitioning =
+        tsink_->stream_sink.join_build_partitioning;
+    has_join_build_partitioning_ = true;
+    vector<bool> is_not_distinct_from;
+    for (const TEqJoinCondition& eq_join_conjunct : partitioning.eq_join_conjuncts) {
+      ScalarExpr* build_expr;
+      RETURN_IF_ERROR(ScalarExpr::Create(
+          eq_join_conjunct.right, *input_row_desc_, state, &build_expr));
+      join_build_exprs_.push_back(build_expr);
+      is_not_distinct_from.push_back(eq_join_conjunct.is_not_distinct_from);
+    }
+    // Must be the same configuration as the one of the join builder, see
+    // PhjBuilderConfig::InitExprsAndFilters(), so that the hash values are the same.
+    join_build_hash_table_config_ = state->obj_pool()->Add(new HashTableConfig(
+        join_build_exprs_, join_build_exprs_,
+        PhjBuilder::HashTableStoresNulls(partitioning.join_op, is_not_distinct_from),
+        is_not_distinct_from));
+    join_build_hash_seed_ = partitioning.hash_seed;
+  }
   num_channels_ = state->fragment_ctx().destinations().size();
   state->CheckAndAddCodegenDisabledMessage(codegen_status_msgs_);
   return Status::OK();
@@ -113,6 +136,7 @@ DataSink* KrpcDataStreamSenderConfig::CreateSink(RuntimeState* state) const {
 
 void KrpcDataStreamSenderConfig::Close() {
   ScalarExpr::Close(partition_exprs_);
+  ScalarExpr::Close(join_build_exprs_);
   DataSinkConfig::Close();
 }
 
@@ -825,6 +849,29 @@ KrpcDataStreamSender::KrpcDataStreamSender(TDataSinkId sink_id, int sender_id,
       host_to_channel_[destination.address()] = channels_.back().get();
     }
   }
+  // If the rows are broadcast to the build workers of a parallel join build, send each
+  // row only to the worker on every host that owns the row's join partition.
+  if (sink_config.has_join_build_partitioning_ && destinations.size() > 0
+      && destinations[0].num_build_workers() > 1) {
+    const int num_build_workers = destinations[0].num_build_workers();
+    DCHECK_EQ(partition_type_, TPartitionType::UNPARTITIONED);
+    build_worker_collectors_.resize(num_build_workers);
+    for (BuildWorkerRowCollector& collector : build_worker_collectors_) {
+      collector.parent_ = this;
+    }
+    for (int i = 0; i < destinations.size(); ++i) {
+      DCHECK_EQ(destinations[i].num_build_workers(), num_build_workers);
+      DCHECK_LT(destinations[i].build_worker_idx(), num_build_workers);
+      build_worker_collectors_[destinations[i].build_worker_idx()].channels_.push_back(
+          channels_[i].get());
+    }
+    for (BuildWorkerRowCollector& collector : build_worker_collectors_) {
+      DCHECK(!collector.channels_.empty());
+      // Randomize the order we transmit to channels to avoid thundering herd problems.
+      random_shuffle(collector.channels_.begin(), collector.channels_.end());
+    }
+  }
+
   if (IsDirectedMode()) {
     DCHECK_EQ(row_desc_->tuple_descriptors().size(), 1);
     TupleDescriptor* tuple_desc = row_desc_->tuple_descriptors()[0];
@@ -834,7 +881,8 @@ KrpcDataStreamSender::KrpcDataStreamSender(TDataSinkId sink_id, int sender_id,
     }
   }
 
-  if (partition_type_ == TPartitionType::UNPARTITIONED
+  if ((partition_type_ == TPartitionType::UNPARTITIONED
+          && build_worker_collectors_.empty())
       || partition_type_ == TPartitionType::RANDOM) {
     // Randomize the order we open/transmit to channels to avoid thundering herd problems.
     random_shuffle(channels_.begin(), channels_.end());
@@ -898,6 +946,20 @@ Status KrpcDataStreamSender::Prepare(
     collector.collector_batch_.reset(new OutboundRowBatch(*char_mem_tracker_allocator_));
     collector.row_batch_capacity_ = collector.channel_->RowBatchCapacity();
   }
+  if (!build_worker_collectors_.empty()) {
+    const KrpcDataStreamSenderConfig& config =
+        static_cast<const KrpcDataStreamSenderConfig&>(sink_config_);
+    RETURN_IF_ERROR(HashTableCtx::Create(state->obj_pool(), state,
+        *config.join_build_hash_table_config_, config.join_build_hash_seed_,
+        PhjBuilder::MAX_PARTITION_DEPTH, row_desc_->tuple_descriptors().size(),
+        expr_perm_pool_.get(), expr_results_pool_.get(), expr_results_pool_.get(),
+        &join_build_ht_ctx_));
+  }
+  for (BuildWorkerRowCollector& collector : build_worker_collectors_) {
+    collector.collector_batch_.reset(new OutboundRowBatch(*char_mem_tracker_allocator_));
+    collector.in_flight_batch_.reset(new OutboundRowBatch(*char_mem_tracker_allocator_));
+    collector.row_batch_capacity_ = collector.channels_[0]->RowBatchCapacity();
+  }
   for (auto& [ch, ice_ch] : channel_to_ice_channel_) {
     ice_ch->Prepare(mem_tracker_.get());
   }
@@ -907,6 +969,7 @@ Status KrpcDataStreamSender::Prepare(
 Status KrpcDataStreamSender::Open(RuntimeState* state) {
   SCOPED_TIMER(profile_->total_time_counter());
   RETURN_IF_ERROR(DataSink::Open(state));
+  if (join_build_ht_ctx_ != nullptr) RETURN_IF_ERROR(join_build_ht_ctx_->Open(state));
   return ScalarExprEvaluator::Open(partition_expr_evals_, state);
 }
 
@@ -1143,7 +1206,10 @@ Status KrpcDataStreamSender::Send(RuntimeState* state, RowBatch* batch) {
   DCHECK(!flushed_);
 
   if (batch->num_rows() == 0) return Status::OK();
-  if (partition_type_ == TPartitionType::UNPARTITIONED) {
+  if (!build_worker_collectors_.empty()) {
+    DCHECK_EQ(partition_type_, TPartitionType::UNPARTITIONED);
+    RETURN_IF_ERROR(AddRowsToBuildWorkers(batch));
+  } else if (partition_type_ == TPartitionType::UNPARTITIONED) {
     // Only skip compression if there is a single channel and destination is in the same
     // process. TODO: could be optimized to send the uncompressed buffer to the local
     // targets to avoid decompression cost at the receiver.
@@ -1291,6 +1357,62 @@ void KrpcDataStreamSender::DumpDestinationHosts() const {
   }
 }
 
+Status KrpcDataStreamSender::AddRowsToBuildWorkers(RowBatch* batch) {
+  const int num_build_workers = build_worker_collectors_.size();
+  HashTableCtx::ExprValuesCache* expr_vals_cache = join_build_ht_ctx_->expr_values_cache();
+  expr_vals_cache->Reset();
+  FOREACH_ROW(batch, 0, batch_iter) {
+    TupleRow* row = batch_iter.Get();
+    // Use the same hash function and partition as PhjBuilder::ProcessBuildBatch(). It
+    // does not add rows with a NULL in an equi-join key to the hash table (unless the
+    // join stores NULLs), so they do not have a partition. They are sent to the first
+    // worker, which skips them like the serial build does.
+    int worker_idx = 0;
+    if (join_build_ht_ctx_->EvalAndHashBuild(row)) {
+      worker_idx = PhjBuilder::BuildWorkerForPartition(
+          PhjBuilder::PartitionIndex(expr_vals_cache->CurExprValuesHash()),
+          num_build_workers);
+    }
+    RETURN_IF_ERROR(build_worker_collectors_[worker_idx].AppendRow(row, row_desc_));
+  }
+  return Status::OK();
+}
+
+Status KrpcDataStreamSender::BuildWorkerRowCollector::AppendRow(
+    const TupleRow* row, const RowDescriptor* row_desc) {
+  DCHECK_LT(num_rows_, row_batch_capacity_);
+  ++num_rows_;
+  RETURN_IF_ERROR(collector_batch_->AppendRow(row, row_desc));
+  if (UNLIKELY(num_rows_ == row_batch_capacity_ || collector_batch_->ReachedSizeLimit())) {
+    RETURN_IF_ERROR(SendCurrentBatch());
+  }
+  return Status::OK();
+}
+
+Status KrpcDataStreamSender::BuildWorkerRowCollector::SendCurrentBatch() {
+  if (collector_batch_->IsEmpty()) {
+    DCHECK_EQ(num_rows_, 0);
+    return Status::OK();
+  }
+  num_rows_ = 0;
+  // Only skip compression if there is a single channel and destination is in the same
+  // process, like in the UNPARTITIONED case.
+  bool is_local = channels_.size() == 1 && channels_[0]->IsLocal();
+  RETURN_IF_ERROR(
+      parent_->PrepareBatchForSend(collector_batch_.get(), !is_local, channels_.size()));
+  // TransmitData() will block if there are still in-flight rpcs of the channel, which
+  // reference the previously sent batch.
+  for (Channel* channel : channels_) {
+    // Do not swap the batch with the channel's outbound_batch_ to allow multiple
+    // channels to use the data backing the batch in parallel.
+    RETURN_IF_ERROR(channel->TransmitData(&collector_batch_, false /*swap_batch*/));
+  }
+  // At this point no RPCs can still refer to the old in_flight_batch_.
+  in_flight_batch_.swap(collector_batch_);
+  collector_batch_->Reset();
+  return Status::OK();
+}
+
 Status KrpcDataStreamSender::FlushFinal(RuntimeState* state) {
   SCOPED_TIMER(profile()->total_time_counter());
   DCHECK(!flushed_);
@@ -1305,6 +1427,9 @@ Status KrpcDataStreamSender::FlushFinal(RuntimeState* state) {
     RETURN_IF_ERROR(ice_ch->Flush());
   }
   for (PartitionRowCollector& collector: partition_row_collectors_) {
+    RETURN_IF_ERROR(collector.SendCurrentBatch());
+  }
+  for (BuildWorkerRowCollector& collector : build_worker_collectors_) {
     RETURN_IF_ERROR(collector.SendCurrentBatch());
   }
   for (unique_ptr<Channel>& channel : channels_) {
@@ -1331,6 +1456,13 @@ void KrpcDataStreamSender::Close(RuntimeState* state) {
 
   for (int i = 0; i < channels_.size(); ++i) {
     channels_[i]->Teardown(state);
+  }
+
+  // The channels do not refer to the collectors' batches after Teardown().
+  build_worker_collectors_.clear();
+  if (join_build_ht_ctx_ != nullptr) {
+    join_build_ht_ctx_->Close(state);
+    join_build_ht_ctx_.reset();
   }
 
   serialization_batch_.reset(nullptr);
@@ -1367,14 +1499,14 @@ Status KrpcDataStreamSender::SerializeBatch(
 }
 
 Status KrpcDataStreamSender::PrepareBatchForSend(
-    OutboundRowBatch* batch, bool compress) {
+    OutboundRowBatch* batch, bool compress, int num_receivers) {
   DCHECK(partition_type_ == TPartitionType::HASH_PARTITIONED
-      || partition_type_ == TPartitionType::KUDU);
+      || partition_type_ == TPartitionType::KUDU || !build_worker_collectors_.empty());
   SCOPED_TIMER(serialize_batch_timer_);
   RETURN_IF_ERROR(batch->PrepareForSend(row_desc_->tuple_descriptors().size(),
       compress ? compression_scratch_.get() : nullptr, true));
   int64_t uncompressed_bytes = batch->GetDeserializedSize();
-  COUNTER_ADD(uncompressed_bytes_counter_, uncompressed_bytes);
+  COUNTER_ADD(uncompressed_bytes_counter_, uncompressed_bytes * num_receivers);
   return Status::OK();
 }
 

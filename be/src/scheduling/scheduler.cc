@@ -439,6 +439,13 @@ Status Scheduler::ComputeFragmentExecParams(
         DCHECK(desc.has_krpc_address());
         DCHECK(IsResolvedAddress(desc.krpc_address()));
         *dest->mutable_krpc_backend() = desc.krpc_address();
+        // Senders to the workers of a parallel join build route the rows by partition.
+        const FInstanceExecParamsPB& dest_params =
+            dest_state->instance_states[i].exec_params;
+        if (dest_params.num_build_workers() > 1) {
+          dest->set_num_build_workers(dest_params.num_build_workers());
+          dest->set_build_worker_idx(dest_params.build_worker_idx());
+        }
       }
 
       // enumerate senders consecutively;

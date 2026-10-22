@@ -60,6 +60,23 @@ enum TTableSinkType {
   KUDU = 2
 }
 
+// How a sender routes the rows that it broadcasts to the build side of a hash join, when
+// the build is done by several build workers per host (PARALLEL_BROADCAST_JOIN_BUILD).
+// Each worker owns a subset of the join builder's level 0 partitions and only needs the
+// rows of those partitions. The sender hashes the rows exactly like the join builder to
+// find their partition. See PhjBuilder and KrpcDataStreamSender.
+struct TJoinBuildPartitioning {
+  // Equi-join conjuncts of the join. The sender hashes the right hand side expressions,
+  // which are evaluated over the rows that the sender sends.
+  1: required list<PlanNodes.TEqJoinCondition> eq_join_conjuncts
+
+  // Join operation implemented by the join.
+  2: required PlanNodes.TJoinOp join_op
+
+  // Hash seed of the join. Must be the same as TJoinBuildSink.hash_seed.
+  3: required i32 hash_seed
+}
+
 // Sink which forwards data to a remote plan fragment,
 // according to the given output partition specification
 // (ie, the m:1 part of an m:n data stream)
@@ -71,6 +88,13 @@ struct TDataStreamSink {
   // If the partitioning type is UNPARTITIONED, the output is broadcast
   // to each destination host.
   2: required Partitions.TDataPartition output_partition
+
+  // Only set if the output is broadcast to the build side of a hash join that may use
+  // several build workers per host. If the destination instances are build workers
+  // (see PlanFragmentDestinationPB), each row is sent to the worker that owns its
+  // partition on every host, instead of to every worker. Otherwise this is ignored and
+  // all the rows are sent to all the destinations.
+  3: optional TJoinBuildPartitioning join_build_partitioning
 }
 
 // Creates a new Hdfs files according to the evaluation of the partitionKeyExprs,

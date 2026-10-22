@@ -23,11 +23,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include <boost/scoped_ptr.hpp>
+
 #include "codegen/impala-ir.h"
 #include "common/global-types.h"
 #include "common/object-pool.h"
 #include "common/status.h"
 #include "exec/data-sink.h"
+#include "exec/hash-table.h"
 #include "exprs/scalar-expr.h"
 #include "runtime/mem-tracker.h"
 #include "runtime/outbound-row-batch.h"
@@ -69,6 +72,16 @@ class KrpcDataStreamSenderConfig : public DataSinkConfig {
 
   /// Hash seed used for exchanges. Query id will be used to seed the hash function.
   uint64_t exchange_hash_seed_;
+
+  /// Set if the output is broadcast to the build of a hash join that may be done by
+  /// several build workers per host. See TJoinBuildPartitioning. If the destinations are
+  /// such workers the sender hashes the rows like the join builder does to send each row
+  /// to the worker that owns its partition, using a HashTableCtx created from
+  /// 'join_build_hash_table_config_' and 'join_build_hash_seed_'.
+  bool has_join_build_partitioning_ = false;
+  std::vector<ScalarExpr*> join_build_exprs_;
+  const HashTableConfig* join_build_hash_table_config_ = nullptr;
+  uint32_t join_build_hash_seed_ = 0;
 
   /// Type and pointer for the codegen'd KrpcDataStreamSender::HashAndAddRows()
   /// function. NULL if codegen is disabled or failed.
@@ -194,6 +207,40 @@ class KrpcDataStreamSender : public DataSink {
   };
   std::vector<PartitionRowCollector> partition_row_collectors_;
 
+  // Only used when sending to the build workers of a parallel join build. There is one
+  // collector per build worker index, which collects the rows of the partitions owned by
+  // that worker. Unlike a PartitionRowCollector, the full batch is sent to the worker
+  // with that index on every host. It is serialized once and shared by the channels, like
+  // in the UNPARTITIONED case.
+  struct BuildWorkerRowCollector {
+    KrpcDataStreamSender* parent_ = nullptr;
+    std::unique_ptr<OutboundRowBatch> collector_batch_;
+    // Referenced by the in-flight RPCs of 'channels_'. Swapped with 'collector_batch_'.
+    std::unique_ptr<OutboundRowBatch> in_flight_batch_;
+    // The channels to the worker on each host.
+    std::vector<Channel*> channels_;
+    int num_rows_ = 0;
+    int row_batch_capacity_ = 0;
+
+    // Copies a single row into collector_batch_ and flushes it (SendCurrentBatch()) once
+    // row count or memory capacity is reached.
+    Status AppendRow(const TupleRow* row, const RowDescriptor* row_desc);
+
+    // Finalizes and compresses collector_batch_ and sends it to all 'channels_'. This
+    // call may block if the preceding RPC of a channel is still in progress.
+    Status SendCurrentBatch();
+  };
+  std::vector<BuildWorkerRowCollector> build_worker_collectors_;
+
+  /// Used for hashing the rows when sending to build workers, see
+  /// 'build_worker_collectors_'. Evaluates the join's build expressions and hashes
+  /// them with the join's hash function and seed.
+  boost::scoped_ptr<HashTableCtx> join_build_ht_ctx_;
+
+  /// Used when 'build_worker_collectors_' is not empty: adds each row of 'batch' to the
+  /// collector of the build worker that owns the row's join partition.
+  Status AddRowsToBuildWorkers(RowBatch* batch);
+
   /// Serializes the src batch into the serialized row batch 'dest' and updates
   /// various stat counters.
   /// 'compress' decides whether compression is attempted after serialization.
@@ -204,7 +251,9 @@ class KrpcDataStreamSender : public DataSink {
 
   // Like SerializeBatch, but the batch is already serialized and only compression is
   // needed.
-  Status PrepareBatchForSend(OutboundRowBatch* batch, bool compress);
+  // 'num_receivers' is the number of receivers the batch will be sent to.
+  Status PrepareBatchForSend(
+      OutboundRowBatch* batch, bool compress, int num_receivers = 1);
 
   /// Returns 'partition_expr_evals_[i]'. Used by the codegen'd HashRow() IR function.
   ScalarExprEvaluator* GetPartitionExprEvaluator(int i);

@@ -166,13 +166,15 @@ Status PhjBuilderConfig::Init(const TDataSink& tsink, const RowDescriptor* input
 
 const char* PhjBuilder::LLVM_CLASS_NAME = "class.impala::PhjBuilder";
 
-static uint32_t OwnedPartitionsMask(int num_build_workers, int build_worker_idx) {
+uint32_t PhjBuilder::OwnedPartitionsMask(int num_build_workers, int build_worker_idx) {
   DCHECK_GE(num_build_workers, 1);
-  DCHECK_LE(num_build_workers, PhjBuilder::PARTITION_FANOUT);
+  DCHECK_LE(num_build_workers, PARTITION_FANOUT);
   DCHECK_LT(build_worker_idx, num_build_workers);
   uint32_t mask = 0;
-  for (int p = 0; p < PhjBuilder::PARTITION_FANOUT; ++p) {
-    if (p % num_build_workers == build_worker_idx) mask |= 1U << p;
+  for (int p = 0; p < PARTITION_FANOUT; ++p) {
+    if (BuildWorkerForPartition(p, num_build_workers) == build_worker_idx) {
+      mask |= 1U << p;
+    }
   }
   return mask;
 }
@@ -605,7 +607,10 @@ Status PhjBuilder::FinishBuildOnLeader(RuntimeState* state) {
   // them any more and stay alive until Close() releases them.
   for (PhjBuilder* worker : workers) {
     for (int p = 0; p < PARTITION_FANOUT; ++p) {
-      if (p % num_build_workers_ != worker->build_worker_idx_) continue;
+      if (BuildWorkerForPartition(p, num_build_workers_)
+          != worker->build_worker_idx_) {
+        continue;
+      }
       DCHECK(hash_partitions_[p]->IsClosed());
       swap(hash_partitions_[p], worker->hash_partitions_[p]);
     }

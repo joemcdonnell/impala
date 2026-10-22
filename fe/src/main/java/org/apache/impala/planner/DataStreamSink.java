@@ -20,11 +20,13 @@ package org.apache.impala.planner;
 import java.util.List;
 
 import org.apache.impala.analysis.Expr;
+import org.apache.impala.common.ThriftSerializationCtx;
 import org.apache.impala.service.BackendConfig;
 import org.apache.impala.thrift.TDataSink;
 import org.apache.impala.thrift.TDataSinkType;
 import org.apache.impala.thrift.TDataStreamSink;
 import org.apache.impala.thrift.TExplainLevel;
+import org.apache.impala.thrift.TJoinBuildPartitioning;
 import org.apache.impala.thrift.TQueryOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +47,12 @@ public class DataStreamSink extends DataSink {
 
   private final ExchangeNode exchNode_;
   private final DataPartition outputPartition_;
+
+  // If not null, the output is broadcast to the build side of this hash join, which may
+  // be done by several build workers per host (see PARALLEL_BROADCAST_JOIN_BUILD). The
+  // backend then needs to know how the join hashes its rows to send each row only to the
+  // worker that owns its partition.
+  private HashJoinNode joinBuildPartitioningJoin_ = null;
 
   public DataStreamSink(ExchangeNode exchNode, DataPartition partition) {
     Preconditions.checkNotNull(exchNode);
@@ -152,10 +160,29 @@ public class DataStreamSink extends DataSink {
     resourceProfile_ = ResourceProfile.noReservation(estimatedMem);
   }
 
+  /**
+   * Marks this sink as broadcasting the build side of 'join'. The backend only uses this
+   * if the join build is done by several build workers per host. Has to be a hash join
+   * where the rows sent by this sink are the rows of its build side, i.e. the right hand
+   * sides of the equi-join conjuncts can be evaluated over them.
+   */
+  public void setJoinBuildPartitioning(HashJoinNode join) {
+    Preconditions.checkState(!outputPartition_.isPartitioned());
+    joinBuildPartitioningJoin_ = join;
+  }
+
   @Override
   protected void toThriftImpl(TDataSink tsink) {
     TDataStreamSink tStreamSink =
         new TDataStreamSink(exchNode_.getId().asInt(), outputPartition_.toThrift());
+    if (joinBuildPartitioningJoin_ != null) {
+      TJoinBuildPartitioning partitioning = new TJoinBuildPartitioning(
+          joinBuildPartitioningJoin_.getThriftEquiJoinConjuncts(
+              new ThriftSerializationCtx()),
+          joinBuildPartitioningJoin_.getJoinOp().toThrift(),
+          joinBuildPartitioningJoin_.getFragment().getHashSeed());
+      tStreamSink.setJoin_build_partitioning(partitioning);
+    }
     tsink.setStream_sink(tStreamSink);
   }
 
