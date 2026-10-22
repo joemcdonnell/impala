@@ -388,6 +388,10 @@ class HdfsScanner {
   /// Close().
   vector<LocalFilterStats> filter_stats_;
 
+  /// Counter for the number of rows processed since the last call to
+  /// CheckFiltersEffectiveness().
+  int32_t rows_since_filter_check_ = 0;
+
   /// Counter for the number of batches returned from GetNext(). Only updated by the
   /// GetNext() API (i.e. PlanNode::num_instances_per_node() > 0),
   /// not the ProcessSplit() API.

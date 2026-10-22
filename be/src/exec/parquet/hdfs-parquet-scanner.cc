@@ -2322,6 +2322,7 @@ Status HdfsParquetScanner::AssembleRowsWithoutLateMaterialization(
   DCHECK(scratch_batch_ != nullptr);
 
   int64_t num_rows_read = 0;
+  int64_t local_rows_since_filter_check = rows_since_filter_check_;
   while (!column_readers[0]->RowGroupAtEnd()) {
     // Start a new scratch batch.
     RETURN_IF_ERROR(scratch_batch_->Reset(state_));
@@ -2363,11 +2364,18 @@ Status HdfsParquetScanner::AssembleRowsWithoutLateMaterialization(
     RETURN_IF_ERROR(CheckPageFiltering());
     COUNTER_ADD(scan_node_->rows_read_counter(), scratch_batch_->num_tuples);
     num_rows_read += scratch_batch_->num_tuples;
+    local_rows_since_filter_check += scratch_batch_->num_tuples();
+    if (UNLIKELY(local_rows_since_filter_check >
+                 UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
+      CheckFilterEffectiveness();
+      local_rows_since_filter_check = 0;
+    }
     int num_row_to_commit = TransferScratchTuples(row_batch);
     RETURN_IF_ERROR(CommitRows(row_batch, num_row_to_commit));
     if (row_batch->AtCapacity()) break;
   }
   row_group_rows_read_ += num_rows_read;
+  rows_since_filter_check_ = local_rows_since_filter_check;
   // Merge Scanner-local counter into HdfsScanNode counter and reset.
   COUNTER_ADD(scan_node_->collection_items_read_counter(), coll_items_read_counter_);
   coll_items_read_counter_ = 0;
@@ -2418,6 +2426,7 @@ Status HdfsParquetScanner::AssembleRows(RowBatch* row_batch, bool* skip_row_grou
   int64_t num_rows_read = 0;
   int64_t num_rows_to_skip = 0;
   int64_t last_row_id_processed = -1;
+  int32_t local_rows_since_filter_check = rows_since_filter_check_;
   while (!column_readers_[0]->RowGroupAtEnd()) {
     // Start a new scratch batch.
     RETURN_IF_ERROR(scratch_batch_->Reset(state_));
@@ -2436,6 +2445,12 @@ Status HdfsParquetScanner::AssembleRows(RowBatch* row_batch, bool* skip_row_grou
         &scratch_batch_->num_tuples));
     if (*skip_row_group) { return Status::OK(); }
     num_rows_read += scratch_batch_->num_tuples;
+    local_rows_since_filter_check += scratch_batch_->num_tuples;
+    if (UNLIKELY(local_rows_since_filter_check >
+                 UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
+      CheckFilterEffectiveness();
+      local_rows_since_filter_check = 0;
+    }
     bool row_group_end = filter_readers_[0]->RowGroupAtEnd();
     int num_row_to_commit = FilterScratchBatch(row_batch);
     if (num_row_to_commit == 0) {
@@ -2497,20 +2512,9 @@ Status HdfsParquetScanner::AssembleRows(RowBatch* row_batch, bool* skip_row_grou
       break;
     }
   }
+  rows_since_filter_check_ = local_rows_since_filter_check;
   row_group_rows_read_ += num_rows_read;
-  int64_t rows_before = scan_node_->rows_read_counter()->value();
   COUNTER_ADD(scan_node_->rows_read_counter(), num_rows_read);
-  int64_t rows_after = rows_before + num_rows_read;
-  // Check filter effectiveness every UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK.
-  // This helps disable ineffective filters when they are paired with a highly
-  // selective filter. The highly selective filter means that very few rows are
-  // returned and the check in HdfsScanner::GetNext() doesn't trigger.
-  // NOTE: UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK is a power of two, so this
-  // will use a right shift.
-  if (UNLIKELY((rows_after / UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK) >
-               (rows_before / UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK))) {
-    CheckFiltersEffectiveness();
-  }
   // Merge Scanner-local counter into HdfsScanNode counter and reset.
   COUNTER_ADD(scan_node_->collection_items_read_counter(), coll_items_read_counter_);
   coll_items_read_counter_ = 0;

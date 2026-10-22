@@ -987,6 +987,7 @@ Status HdfsOrcScanner::AssembleRows(RowBatch* row_batch) {
   RETURN_IF_ERROR(orc_root_reader_->UpdateInputBatch(nullptr));
 
   int64_t num_rows_read = 0;
+  int32_t local_rows_since_filter_check = rows_since_filter_check_;
   while (continue_execution) {  // one ORC batch (ColumnVectorBatch) in a round
     if (orc_root_reader_->EndOfBatch()) {
       row_batch->tuple_data_pool()->AcquireData(data_batch_pool_.get(), false);
@@ -1006,20 +1007,14 @@ Status HdfsOrcScanner::AssembleRows(RowBatch* row_batch) {
         end_of_stripe_ = true;
         return Status::OK();
       }
-      int64_t rows_before = scan_node_->rows_read_counter()->value();
       COUNTER_ADD(scan_node_->rows_read_counter(), orc_root_batch_->numElements);
-      int64_t rows_after = rows_before + orc_root_batch_->numElements;
-      // Check filter effectiveness every UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK.
-      // This helps disable ineffective filters when they are paired with a highly
-      // selective filter. The highly selective filter means that very few rows are
-      // returned and the check in HdfsScanner::GetNext() doesn't trigger.
-      // NOTE: UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK is a power of two, so this
-      // will use a right shift.
-      if (UNLIKELY((rows_after / UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK) >
-                   (rows_before / UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK))) {
-        CheckFiltersEffectiveness();
-      }
       num_rows_read += orc_root_batch_->numElements;
+      local_rows_since_filter_check += orc_root_batch_->numElements;
+      if (UNLIKELY(local_rows_since_filter_check >
+                   UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
+        CheckFilterEffectiveness();
+        local_rows_since_filter_check = 0;
+      }
     }
 
     RETURN_IF_ERROR(TransferTuples(row_batch));
@@ -1027,6 +1022,7 @@ Status HdfsOrcScanner::AssembleRows(RowBatch* row_batch) {
     continue_execution &= !scan_node_->ReachedLimitShared() && !context_->cancelled();
   }
   stripe_rows_read_ += num_rows_read;
+  rows_since_filter_check_ = local_rows_since_filter_check;
   // Merge Scanner-local counter into HdfsScanNode counter and reset.
   COUNTER_ADD(scan_node_->collection_items_read_counter(), coll_items_read_counter_);
   coll_items_read_counter_ = 0;
