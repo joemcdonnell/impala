@@ -1012,7 +1012,7 @@ Status HdfsOrcScanner::AssembleRows(RowBatch* row_batch) {
       local_rows_since_filter_check += orc_root_batch_->numElements;
       if (UNLIKELY(local_rows_since_filter_check >
                    UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
-        CheckFilterEffectiveness();
+        CheckFiltersEffectiveness();
         local_rows_since_filter_check = 0;
       }
     }

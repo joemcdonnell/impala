@@ -2364,10 +2364,10 @@ Status HdfsParquetScanner::AssembleRowsWithoutLateMaterialization(
     RETURN_IF_ERROR(CheckPageFiltering());
     COUNTER_ADD(scan_node_->rows_read_counter(), scratch_batch_->num_tuples);
     num_rows_read += scratch_batch_->num_tuples;
-    local_rows_since_filter_check += scratch_batch_->num_tuples();
+    local_rows_since_filter_check += scratch_batch_->num_tuples;
     if (UNLIKELY(local_rows_since_filter_check >
                  UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
-      CheckFilterEffectiveness();
+      CheckFiltersEffectiveness();
       local_rows_since_filter_check = 0;
     }
     int num_row_to_commit = TransferScratchTuples(row_batch);
@@ -2448,7 +2448,7 @@ Status HdfsParquetScanner::AssembleRows(RowBatch* row_batch, bool* skip_row_grou
     local_rows_since_filter_check += scratch_batch_->num_tuples;
     if (UNLIKELY(local_rows_since_filter_check >
                  UNFILTERED_ROWS_PER_FILTER_SELECTIVITY_CHECK)) {
-      CheckFilterEffectiveness();
+      CheckFiltersEffectiveness();
       local_rows_since_filter_check = 0;
     }
     bool row_group_end = filter_readers_[0]->RowGroupAtEnd();
