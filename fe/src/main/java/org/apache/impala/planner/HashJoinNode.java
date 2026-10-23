@@ -63,6 +63,17 @@ public class HashJoinNode extends JoinNode implements SpillableOperator {
   // and this name would then be the narrow one.
   private boolean isConstantFalseOuterJoin_ = false;
 
+  // The number of build worker fragment instances per host that build the hash tables of
+  // this join together, if it has a separate, shared build, see
+  // PARALLEL_BROADCAST_JOIN_BUILD. 1 if each host has a single build instance. Set by
+  // JoinBuildSink, which decides it, before the resource profiles are computed.
+  private int numBuildWorkers_ = 1;
+  public int getNumBuildWorkers() { return numBuildWorkers_; }
+  public void setNumBuildWorkers(int numBuildWorkers) {
+    Preconditions.checkState(numBuildWorkers >= 1);
+    numBuildWorkers_ = numBuildWorkers;
+  }
+
   // Coefficients for estimating hash join CPU processing cost.  Derived from
   // benchmarking. Probe side cost per input row consumed
   private static final double COST_COEFFICIENT_PROBE_INPUT = 0.2565;
@@ -299,17 +310,27 @@ public class HashJoinNode extends JoinNode implements SpillableOperator {
       if (distrMode_ == DistributionMode.PARTITIONED) {
         perBuildInstanceDataBytes /= numInstances;
       }
+      // With several build workers per host, each worker holds its share of the table.
+      if (numBuildWorkers_ > 1) {
+        perBuildInstanceDataBytes =
+            (perBuildInstanceDataBytes + numBuildWorkers_ - 1) / numBuildWorkers_;
+      }
       perBuildInstanceMemEstimate = perBuildInstanceDataBytes;
     }
 
-    // Must be kept in sync with PartitionedHashJoinBuilder::MinReservation() in be.
+    // Must be kept in sync with PhjBuilder::MinReservation() in be.
     final int PARTITION_FANOUT = 16;
-    long minBuildBuffers = PARTITION_FANOUT + 1
+    // With several build workers per host each worker only owns, and has a write buffer
+    // for, the partitions p with p % numBuildWorkers_ == its index. The number of
+    // partitions of the workers differs by at most 1, use the largest.
+    int numOwnedPartitions =
+        (PARTITION_FANOUT + numBuildWorkers_ - 1) / numBuildWorkers_;
+    long minBuildBuffers = numOwnedPartitions + 1
         + (joinOp_ == JoinOperator.NULL_AWARE_LEFT_ANTI_JOIN ? 1 : 0);
 
     long bufferSize = queryOptions.getDefault_spillable_buffer_size();
     if (perBuildInstanceDataBytes != -1) {
-      long bytesPerBuffer = perBuildInstanceDataBytes / PARTITION_FANOUT;
+      long bytesPerBuffer = perBuildInstanceDataBytes / numOwnedPartitions;
       // Scale down the buffer size if we think there will be excess free space with the
       // default buffer size, e.g. if the right side is a small dimension table.
       bufferSize = Math.min(bufferSize, Math.max(
@@ -333,6 +354,10 @@ public class HashJoinNode extends JoinNode implements SpillableOperator {
       int numInstancePerHost = queryOptions.compute_processing_cost ?
           fragment_.getNumInstancesPerHost(queryOptions) :
           queryOptions.getMt_dop();
+      // The probes get their reservation from the builder. With several build workers
+      // per host, the workers split the reservation, so that the total per host stays
+      // about the same.
+      numInstancePerHost = (numInstancePerHost + numBuildWorkers_ - 1) / numBuildWorkers_;
       perInstanceBuildMinMemReservation *= numInstancePerHost;
     }
     // Most reservation for probe buffers is obtained from the join builder when

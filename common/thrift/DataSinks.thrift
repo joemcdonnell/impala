@@ -184,6 +184,12 @@ struct TJoinBuildSink {
   // If true, join build sharing is enabled and, if multiple instances of a join node are
   // scheduled on the same backend, they will share the join build on that backend.
   6: optional bool share_build
+
+  // Only set for a hash join with a shared build. If greater than 1, the build on each
+  // backend is done by this number of build worker fragment instances, which each own a
+  // subset of the join builder's partitions, see PARALLEL_BROADCAST_JOIN_BUILD. The
+  // planner decides this, the scheduler creates the instances. 1 if not set.
+  7: optional i32 num_build_workers
 }
 
 struct TPlanRootSink {

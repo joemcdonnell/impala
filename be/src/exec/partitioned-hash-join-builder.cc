@@ -476,13 +476,15 @@ Status PhjBuilder::FinalizeBuild(RuntimeState* state) {
 Status PhjBuilder::BuildOwnedPartitions() {
   DCHECK_EQ(PARTITION_FANOUT, hash_partitions_.size());
   DCHECK_ENUM_EQ(state_, HashJoinState::PARTITIONING_BUILD);
+  // The partitions owned by other workers are closed.
   for (const unique_ptr<PhjBuilderPartition>& partition : hash_partitions_) {
-    partition->build_rows()->DoneWriting();
+    if (!partition->IsClosed()) partition->build_rows()->DoneWriting();
   }
   for (int i = 0; i < PARTITION_FANOUT; ++i) {
     PhjBuilderPartition* partition = hash_partitions_[i].get();
+    if (partition->IsClosed()) continue;
     if (partition->build_rows()->num_rows() == 0) {
-      // Nothing to build. This is always the case for partitions owned by other workers.
+      // Nothing to build.
       partition->Close(nullptr);
       continue;
     }
@@ -750,12 +752,23 @@ Status PhjBuilder::CreateAndPreparePartition(
 Status PhjBuilder::CreateHashPartitions(int level) {
   DCHECK(hash_partitions_.empty());
   ht_ctx_->set_level(level); // Set the hash function for partitioning input.
+  int num_created = 0;
   for (int i = 0; i < PARTITION_FANOUT; ++i) {
     unique_ptr<PhjBuilderPartition> new_partition;
-    RETURN_IF_ERROR(CreateAndPreparePartition(level, &new_partition));
+    if (level == 0 && ((owned_partitions_mask_ >> i) & 1) == 0) {
+      // In a parallel build, this partition is owned by another build worker, which
+      // receives and stores its rows. Keep a closed placeholder, so that there are
+      // PARTITION_FANOUT partitions. It has no write buffer: the planner only reserves
+      // memory for the partitions that this worker owns, see MinReservation().
+      new_partition = make_unique<PhjBuilderPartition>(runtime_state_, this, level);
+      new_partition->Close(nullptr);
+    } else {
+      RETURN_IF_ERROR(CreateAndPreparePartition(level, &new_partition));
+      ++num_created;
+    }
     hash_partitions_.push_back(std::move(new_partition));
   }
-  COUNTER_ADD(partitions_created_, PARTITION_FANOUT);
+  COUNTER_ADD(partitions_created_, num_created);
   COUNTER_SET(max_partition_level_, level);
   return Status::OK();
 }

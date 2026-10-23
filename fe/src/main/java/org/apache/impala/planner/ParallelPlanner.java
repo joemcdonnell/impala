@@ -19,7 +19,6 @@ package org.apache.impala.planner;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.impala.analysis.JoinOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -160,13 +159,17 @@ public class ParallelPlanner {
     List<PlanFragment> inputFragments = new ArrayList<>();
     join.getFragment().collect(isInputFragment, inputFragments);
     Preconditions.checkState(exchNodes.size() == inputFragments.size());
-    setJoinBuildPartitioning(join, inputFragments);
+    // Decide how many build workers per host build the join. The sender that broadcasts
+    // the build side needs to know how to route the rows to the workers.
+    int numBuildWorkers =
+        JoinBuildSink.computeNumBuildWorkers(join, ctx_.getQueryOptions());
+    setJoinBuildPartitioning(join, inputFragments, numBuildWorkers);
 
     // Create new fragment with JoinBuildSink that consumes the output of the
     // join's rhs input (the one that materializes the build side).
     // The new fragment has the same data partition as the join node's fragment.
     JoinBuildSink buildSink =
-        new JoinBuildSink(joinTableIdGenerator_.getNextId(), join);
+        new JoinBuildSink(joinTableIdGenerator_.getNextId(), join, numBuildWorkers);
     join.setJoinTableId(buildSink.getJoinTableId());
     // Filters will be produced by the build sink. Remove them from the join node since
     // it now not responsible for producing them.
@@ -208,15 +211,15 @@ public class ParallelPlanner {
    * only if the build side is directly the output of a broadcast exchange, because the
    * join's build expressions must be evaluated over the rows that the sender sends.
    */
-  private void setJoinBuildPartitioning(JoinNode join, List<PlanFragment> inputFragments) {
-    if (ctx_.getQueryOptions().getParallel_broadcast_join_build() <= 1) return;
-    if (!(join instanceof HashJoinNode) || !join.canShareBuild()) return;
-    if (join.getJoinOp() == JoinOperator.NULL_AWARE_LEFT_ANTI_JOIN) return;
+  private void setJoinBuildPartitioning(
+      JoinNode join, List<PlanFragment> inputFragments, int numBuildWorkers) {
+    // 'numBuildWorkers' already takes care of the type and the options of the join.
+    if (numBuildWorkers <= 1) return;
     if (!(join.getChild(1) instanceof ExchangeNode) || inputFragments.size() != 1) return;
     DataSink sink = inputFragments.get(0).getSink();
     if (!(sink instanceof DataStreamSink)) return;
     DataStreamSink streamSink = (DataStreamSink) sink;
     if (streamSink.getOutputPartition().isPartitioned()) return;
-    streamSink.setJoinBuildPartitioning((HashJoinNode) join);
+    streamSink.setJoinBuildPartitioning((HashJoinNode) join, numBuildWorkers);
   }
 }

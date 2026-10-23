@@ -22,6 +22,7 @@ import java.util.List;
 
 import org.apache.impala.analysis.BinaryPredicate;
 import org.apache.impala.analysis.Expr;
+import org.apache.impala.analysis.JoinOperator;
 import org.apache.impala.common.ThriftSerializationCtx;
 import org.apache.impala.planner.RuntimeFilterGenerator.RuntimeFilter;
 import org.apache.impala.thrift.TDataSink;
@@ -48,13 +49,51 @@ public class JoinBuildSink extends DataSink implements SpillableOperator {
 
   private final List<RuntimeFilter> runtimeFilters_ = new ArrayList<>();
 
+  // The number of build worker fragment instances per host. 1 unless the join build is
+  // done by several workers per host, see computeNumBuildWorkers().
+  private final int numBuildWorkers_;
+
+  // The maximum number of build workers per host. Every worker owns at least one of the
+  // join builder's partitions. Must not be larger than PhjBuilder::PARTITION_FANOUT.
+  public static final int MAX_BUILD_WORKERS = 16;
+
+  /**
+   * Returns the number of build worker fragment instances per host to use for the build
+   * of 'join', which is 1 if each host has a single build instance. Several workers are
+   * only used for the shared build of a broadcast hash join, if requested with the
+   * PARALLEL_BROADCAST_JOIN_BUILD query option. Null-aware anti joins need a single
+   * builder, and compute_processing_cost does not support it yet. The scheduler creates
+   * the instances based on this decision, which is sent in TJoinBuildSink.
+   */
+  public static int computeNumBuildWorkers(JoinNode join, TQueryOptions queryOptions) {
+    int requested = queryOptions.getParallel_broadcast_join_build();
+    if (requested <= 1 || queryOptions.isCompute_processing_cost()) return 1;
+    if (!(join instanceof HashJoinNode) || !join.canShareBuild()) return 1;
+    if (join.getJoinOp() == JoinOperator.NULL_AWARE_LEFT_ANTI_JOIN) return 1;
+    return Math.min(requested, MAX_BUILD_WORKERS);
+  }
+
   /**
    * Creates sink for build side of 'joinNode' (extracts buildExprs_ from joinNode).
    */
   public JoinBuildSink(JoinTableId joinTableId, JoinNode joinNode) {
+    this(joinTableId, joinNode, 1);
+  }
+
+  /**
+   * Creates sink for build side of 'joinNode' with 'numBuildWorkers' build worker
+   * instances per host, see computeNumBuildWorkers().
+   */
+  public JoinBuildSink(JoinTableId joinTableId, JoinNode joinNode, int numBuildWorkers) {
     Preconditions.checkState(joinTableId.isValid());
+    Preconditions.checkState(numBuildWorkers >= 1);
     joinTableId_ = joinTableId;
     joinNode_ = joinNode;
+    numBuildWorkers_ = numBuildWorkers;
+    if (numBuildWorkers > 1) {
+      Preconditions.checkState(joinNode instanceof HashJoinNode && joinNode.canShareBuild());
+      ((HashJoinNode) joinNode).setNumBuildWorkers(numBuildWorkers);
+    }
     Preconditions.checkNotNull(joinNode);
     Preconditions.checkState(joinNode instanceof JoinNode);
     if (joinNode instanceof HashJoinNode) {
@@ -87,6 +126,7 @@ public class JoinBuildSink extends DataSink implements SpillableOperator {
           filter.toThrift(new ThriftSerializationCtx(), null));
     }
     tBuildSink.setShare_build(joinNode_.canShareBuild());
+    if (numBuildWorkers_ > 1) tBuildSink.setNum_build_workers(numBuildWorkers_);
     tsink.setJoin_build_sink(tBuildSink);
   }
 
@@ -111,6 +151,10 @@ public class JoinBuildSink extends DataSink implements SpillableOperator {
           detailPrefix + "join-table-id=" + joinTableId_.toString()
             + " plan-id=" + fragment_.getPlanId().toString()
             + " cohort-id=" + fragment_.getCohortId().toString() + "\n");
+      if (numBuildWorkers_ > 1) {
+        output.append(detailPrefix + "parallel build workers per host: "
+            + numBuildWorkers_ + "\n");
+      }
       if (!buildExprs_.isEmpty()) {
         output.append(detailPrefix + "build expressions: ")
             .append(Expr.toSql(buildExprs_, DEFAULT) + "\n");
@@ -138,9 +182,12 @@ public class JoinBuildSink extends DataSink implements SpillableOperator {
    * are co-located, but the build may be shared.
    */
   public int getNumInstances() {
-    return joinNode_.canShareBuild() ? joinNode_.getFragment().getNumNodes() :
-                                       joinNode_.getFragment().getNumInstances();
+    return joinNode_.canShareBuild() ?
+        joinNode_.getFragment().getNumNodes() * numBuildWorkers_ :
+        joinNode_.getFragment().getNumInstances();
   }
+
+  public int getNumBuildWorkers() { return numBuildWorkers_; }
 
   public boolean isShared() { return joinNode_.canShareBuild(); }
 

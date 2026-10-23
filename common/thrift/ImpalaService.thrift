@@ -1123,7 +1123,7 @@ enum TImpalaQueryOptions {
   // join build fragment instance that owns a disjoint subset of the 16 hash join
   // partitions. A value of 0 or 1 disables parallel build (one build instance per host).
   // Values larger than 16 are capped at 16. Joins that cannot use it (e.g. null-aware
-  // anti joins) ignore this option.
+  // anti joins) ignore this option, and it is ignored if COMPUTE_PROCESSING_COST is true.
   PARALLEL_BROADCAST_JOIN_BUILD = 207
 }
 

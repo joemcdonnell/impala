@@ -1265,14 +1265,12 @@ void Scheduler::CreateCollocatedJoinBuildInstances(
       << "Parent fragment instances must already be created.";
   vector<FInstanceScheduleState>* instance_states = &fragment_state->instance_states;
   bool share_build = fragment.output_sink.join_build_sink.share_build;
-  // Number of build workers per host for a parallel broadcast join build. Only
-  // applicable to hash joins that share the build (broadcast joins) and are not
-  // null-aware, which needs a single builder for its null-aware partition.
+  // Number of build workers per host for a parallel broadcast join build. The planner
+  // decides this, it only does it for the shared build of hash joins that support it.
   int num_build_workers = 1;
-  if (share_build && sink.join_op != TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN
-      && fragment.output_sink.type == TDataSinkType::HASH_JOIN_BUILDER) {
-    num_build_workers = max(1,
-        min(MAX_JOIN_BUILD_WORKERS, state->query_options().parallel_broadcast_join_build));
+  if (share_build && fragment.output_sink.type == TDataSinkType::HASH_JOIN_BUILDER
+      && sink.__isset.num_build_workers) {
+    num_build_workers = max(1, min(MAX_JOIN_BUILD_WORKERS, sink.num_build_workers));
   }
   if (num_build_workers > 1) {
     fragment_state->exec_params->set_num_build_workers(num_build_workers);

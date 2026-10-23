@@ -53,6 +53,8 @@ public class DataStreamSink extends DataSink {
   // backend then needs to know how the join hashes its rows to send each row only to the
   // worker that owns its partition.
   private HashJoinNode joinBuildPartitioningJoin_ = null;
+  // The number of build workers per host, if 'joinBuildPartitioningJoin_' is set.
+  private int numBuildWorkers_ = 1;
 
   public DataStreamSink(ExchangeNode exchNode, DataPartition partition) {
     Preconditions.checkNotNull(exchNode);
@@ -64,10 +66,15 @@ public class DataStreamSink extends DataSink {
   @Override
   public void appendSinkExplainString(String prefix, String detailPrefix,
       TQueryOptions queryOptions, TExplainLevel detailLevel, StringBuilder output) {
+    String labelDetail = exchNode_.getDisplayLabelDetail();
+    if (joinBuildPartitioningJoin_ != null) {
+      // Each row is only sent to the build worker on each host that owns its partition.
+      labelDetail += ", BUILD-WORKERS=" + numBuildWorkers_;
+    }
     output.append(
         String.format("%sDATASTREAM SINK [FRAGMENT=%s, EXCHANGE=%s, %s]",
         prefix, exchNode_.getFragment().getId().toString(),
-        exchNode_.getId().toString(), exchNode_.getDisplayLabelDetail()));
+        exchNode_.getId().toString(), labelDetail));
     output.append("\n");
   }
 
@@ -107,9 +114,14 @@ public class DataStreamSink extends DataSink {
     long beRowsPerBuffer =
         Math.max(1, (long)Math.ceil(beBufferBytes/fixedLenRowSize));
     // Broadcast sended uses row_batch for buffer capacity.
-    boolean useBeLogic  = beBufferBytes > 0 && outputPartition_.isPartitioned();
-    int numChannels =
-        outputPartition_.isPartitioned() ? exchNode_.getFragment().getNumInstances() : 1;
+    // A sender that routes rows to the build workers of a parallel join build accumulates
+    // the rows in one buffer per worker index, like a partitioned sender does per channel.
+    boolean routesToBuildWorkers = joinBuildPartitioningJoin_ != null;
+    boolean useBeLogic = beBufferBytes > 0
+        && (outputPartition_.isPartitioned() || routesToBuildWorkers);
+    int numChannels = outputPartition_.isPartitioned() ?
+        exchNode_.getFragment().getNumInstances() :
+        (routesToBuildWorkers ? numBuildWorkers_ : 1);
     long rowBatchSize =
         useBeLogic ?  beRowsPerBuffer : PlanNode.getRowBatchSize(queryOptions);
     long avgOutboundRowBatchSize = Math.min(
@@ -166,9 +178,11 @@ public class DataStreamSink extends DataSink {
    * where the rows sent by this sink are the rows of its build side, i.e. the right hand
    * sides of the equi-join conjuncts can be evaluated over them.
    */
-  public void setJoinBuildPartitioning(HashJoinNode join) {
+  public void setJoinBuildPartitioning(HashJoinNode join, int numBuildWorkers) {
     Preconditions.checkState(!outputPartition_.isPartitioned());
+    Preconditions.checkState(numBuildWorkers > 1);
     joinBuildPartitioningJoin_ = join;
+    numBuildWorkers_ = numBuildWorkers;
   }
 
   @Override

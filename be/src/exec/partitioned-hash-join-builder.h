@@ -589,8 +589,12 @@ class PhjBuilder : public JoinBuilder {
   /// 'null_probe_rows_' on the probe side.
   /// Returns a pair with the probe and build reservation requirements.
   std::pair<int64_t, int64_t> MinReservation() const {
-    // Must be kept in sync with HashJoinNode.computeNodeResourceProfile() in fe.
-    int num_reserved_build_buffers = PARTITION_FANOUT + 1;
+    // Must be kept in sync with HashJoinNode.computeJoinResourceProfile() in fe.
+    // With several build workers per host, a worker only has a write buffer for the
+    // partitions that it owns, at most ceil(PARTITION_FANOUT / num_build_workers_).
+    int num_owned_partitions =
+        (PARTITION_FANOUT + num_build_workers_ - 1) / num_build_workers_;
+    int num_reserved_build_buffers = num_owned_partitions + 1;
     int64_t probe_reservation = 0;
     if (join_op_ == TJoinOp::NULL_AWARE_LEFT_ANTI_JOIN) {
       num_reserved_build_buffers += 1;

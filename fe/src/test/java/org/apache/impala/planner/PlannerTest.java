@@ -1649,6 +1649,16 @@ public class PlannerTest extends PlannerTestBase {
   }
 
   /**
+   * Test the plans, instance counts and resource requirements of broadcast hash joins
+   * that are built by several workers per host (PARALLEL_BROADCAST_JOIN_BUILD).
+   */
+  @Test
+  public void testParallelBroadcastJoinBuild() {
+    runPlannerTestFile("parallel-broadcast-join-build",
+        ImmutableSet.of(PlannerTestOption.INCLUDE_RESOURCE_HEADER));
+  }
+
+  /**
    * Test that processing cost can adjust effective instance count of fragment.
    */
   @Test

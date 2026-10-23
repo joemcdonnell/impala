@@ -163,6 +163,66 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
             "{0} workers: the build rows are not routed to the owning worker".format(
                 num_workers)
 
+  # "Per Host Min Memory Reservation: host:27000(62.12 MB) host:27001(62.12 MB) ..."
+  # "Per Host Number of Fragment Instances: host:27000(21) host:27001(19) ..."
+  PER_HOST_RE = r"%s: (.*)\n"
+  PER_HOST_VALUE_RE = re.compile(r"\(([0-9.]+)(?: (B|KB|MB|GB))?\)")
+  UNITS = {None: 1, "B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
+
+  def _per_host_values(self, profile, key):
+    """Returns the values of the 'key' admission info string, as numbers, one per host."""
+    match = re.search(self.PER_HOST_RE % re.escape(key), profile)
+    assert match, "Did not find '{0}' in the profile".format(key)
+    # findall() returns an empty string for the unit of a value without one.
+    return [float(value) * self.UNITS[unit or None]
+            for value, unit in self.PER_HOST_VALUE_RE.findall(match.group(1))]
+
+  @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
+  def test_planner_accounts_for_workers(self):
+    """The planner knows about the build workers: the instances per host are K more for
+    the build fragment, and the memory reserved for admission is about the same as for
+    the serial build, as the workers split the memory and only own some partitions."""
+    query = self.QUERIES[0]
+    _, serial_profile = self._run(query, 0, False)
+    serial_instances = self._per_host_values(
+        serial_profile, "Per Host Number of Fragment Instances")
+    serial_reservation = self._per_host_values(
+        serial_profile, "Per Host Min Memory Reservation")
+    assert len(serial_instances) == self.NUM_HOSTS
+    for num_workers in [2, 4, 16]:
+      _, profile = self._run(query, num_workers, False)
+      instances = self._per_host_values(
+          profile, "Per Host Number of Fragment Instances")
+      reservation = self._per_host_values(profile, "Per Host Min Memory Reservation")
+      # Each host runs one build instance in the serial build, and K with workers.
+      assert sum(instances) == sum(serial_instances) + \
+          self.NUM_HOSTS * (num_workers - 1), (instances, serial_instances)
+      # The reservation grows with the workers, since each needs buffers to repartition
+      # (two max row size buffers), but much slower than if each extra worker had the
+      # minimum reservation of the serial build, which holds buffers for all the
+      # partitions. A worker owns about 1/K of the partitions, and the workers split the
+      # memory for the probes.
+      naive_reservation = max(serial_reservation) * num_workers
+      assert max(reservation) < naive_reservation, \
+          "{0} workers: {1} vs {2}".format(num_workers, reservation, serial_reservation)
+      assert max(reservation) < \
+          max(serial_reservation) + (num_workers - 1) * max(serial_reservation) / 2, \
+          "{0} workers: {1} vs {2}".format(num_workers, reservation, serial_reservation)
+      # The plan in the profile has the workers.
+      assert "parallel build workers per host: {0}".format(num_workers) in profile
+
+  @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
+  def test_ignored_with_compute_processing_cost(self):
+    """The option is not supported with compute_processing_cost: there is one build
+    instance per host, and the results are right."""
+    query = self.QUERIES[1]
+    expected, _ = self._run(query, 0, False)
+    actual, profile = self._run(
+        query, 4, False, {"compute_processing_cost": "true"})
+    assert actual.data == expected.data
+    assert self._num_builders(profile) == self.NUM_HOSTS
+    assert "parallel build workers per host" not in profile
+
   @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
   def test_null_aware_anti_join_not_parallel(self):
     """A null-aware anti join needs a single builder and ignores the option."""

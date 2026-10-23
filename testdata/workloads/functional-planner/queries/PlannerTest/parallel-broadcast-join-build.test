@@ -1,0 +1,558 @@
+# Broadcast join with a parallel build. Each host gets 3 build workers. The build fragment
+# has 3 instances per host, each with a share of the hash table, and the sender routes the
+# rows to the workers.
+select count(*) from functional.alltypes a
+join /* +broadcast */ functional.alltypessmall b on a.id = b.id
+---- QUERYOPTIONS
+mt_dop=4
+parallel_broadcast_join_build=3
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=12.02MB Threads=10
+Per-Host Resource Estimates: Memory=108MB
+F02:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0
+  |
+  06:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=1
+  |  in pipelines: 06(GETNEXT), 03(OPEN)
+  |
+  05:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=2 row-size=8B cardinality=12
+     in pipelines: 03(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=12
+Per-Host Shared Resources: mem-estimate=1.00MB mem-reservation=1.00MB thread-reservation=0 runtime-filters-memory=1.00MB
+Per-Instance Resources: mem-estimate=16.02MB mem-reservation=32.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=05, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=12
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [INNER JOIN, BROADCAST]
+  |  hash-table-id=00
+  |  hash predicates: a.id = b.id
+  |  fk/pk conjuncts: a.id = b.id
+  |  mem-estimate=0B mem-reservation=0B spill-buffer=64.00KB thread-reservation=0
+  |  tuple-ids=0,1 row-size=8B cardinality=99
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     runtime filters: RF000[bloom] -> a.id
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F03:PLAN FRAGMENT [RANDOM] hosts=3 instances=9
+Per-Instance Resources: mem-estimate=3.64MB mem-reservation=3.62MB thread-reservation=1 runtime-filters-memory=1.00MB
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  parallel build workers per host: 3
+  |  build expressions: b.id
+  |  runtime filters: RF000[bloom] <- b.id
+  |  mem-estimate=2.62MB mem-reservation=2.62MB spill-buffer=64.00KB thread-reservation=0
+  |
+  04:EXCHANGE [BROADCAST]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=4
+Per-Instance Resources: mem-estimate=16.09MB mem-reservation=8.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=04, BROADCAST, BUILD-WORKERS=3]
+  |  mem-estimate=96.00KB mem-reservation=0B thread-reservation=0
+  01:SCAN HDFS [functional.alltypessmall b, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+====
+# Same query without the parallel build, for comparison.
+select count(*) from functional.alltypes a
+join /* +broadcast */ functional.alltypessmall b on a.id = b.id
+---- QUERYOPTIONS
+mt_dop=4
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=9.89MB Threads=8
+Per-Host Resource Estimates: Memory=106MB
+F02:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0
+  |
+  06:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=1
+  |  in pipelines: 06(GETNEXT), 03(OPEN)
+  |
+  05:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=2 row-size=8B cardinality=12
+     in pipelines: 03(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=12
+Per-Host Shared Resources: mem-estimate=1.00MB mem-reservation=1.00MB thread-reservation=0 runtime-filters-memory=1.00MB
+Per-Instance Resources: mem-estimate=16.02MB mem-reservation=32.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=05, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=12
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [INNER JOIN, BROADCAST]
+  |  hash-table-id=00
+  |  hash predicates: a.id = b.id
+  |  fk/pk conjuncts: a.id = b.id
+  |  mem-estimate=0B mem-reservation=0B spill-buffer=64.00KB thread-reservation=0
+  |  tuple-ids=0,1 row-size=8B cardinality=99
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     runtime filters: RF000[bloom] -> a.id
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F03:PLAN FRAGMENT [RANDOM] hosts=3 instances=3
+Per-Instance Resources: mem-estimate=8.77MB mem-reservation=8.75MB thread-reservation=1 runtime-filters-memory=1.00MB
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  build expressions: b.id
+  |  runtime filters: RF000[bloom] <- b.id
+  |  mem-estimate=7.75MB mem-reservation=7.75MB spill-buffer=64.00KB thread-reservation=0
+  |
+  04:EXCHANGE [BROADCAST]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=4
+Per-Instance Resources: mem-estimate=16.03MB mem-reservation=8.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=04, BROADCAST]
+  |  mem-estimate=32.00KB mem-reservation=0B thread-reservation=0
+  01:SCAN HDFS [functional.alltypessmall b, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+====
+# The build is not parallelized for a null-aware anti join.
+select count(*) from functional.alltypes a
+where a.id not in (select /* +broadcast */ id from functional.alltypessmall)
+---- QUERYOPTIONS
+mt_dop=4
+parallel_broadcast_join_build=3
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=10.39MB Threads=8
+Per-Host Resource Estimates: Memory=106MB
+F02:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0
+  |
+  06:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=3 row-size=8B cardinality=1
+  |  in pipelines: 06(GETNEXT), 03(OPEN)
+  |
+  05:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=3 row-size=8B cardinality=12
+     in pipelines: 03(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=12
+Per-Instance Resources: mem-estimate=16.58MB mem-reservation=608.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=05, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=3 row-size=8B cardinality=12
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [NULL AWARE LEFT ANTI JOIN, BROADCAST]
+  |  hash-table-id=00
+  |  hash predicates: a.id = id
+  |  mem-estimate=576.00KB mem-reservation=576.00KB spill-buffer=64.00KB thread-reservation=0
+  |  tuple-ids=0 row-size=4B cardinality=7.30K
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F03:PLAN FRAGMENT [RANDOM] hosts=3 instances=3
+Per-Instance Resources: mem-estimate=8.02MB mem-reservation=8.00MB thread-reservation=1
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  build expressions: id
+  |  mem-estimate=8.00MB mem-reservation=8.00MB spill-buffer=64.00KB thread-reservation=0
+  |
+  04:EXCHANGE [BROADCAST]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=4
+Per-Instance Resources: mem-estimate=16.03MB mem-reservation=8.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=04, BROADCAST]
+  |  mem-estimate=32.00KB mem-reservation=0B thread-reservation=0
+  01:SCAN HDFS [functional.alltypessmall, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+====
+# The option is ignored with compute_processing_cost.
+select count(*) from functional.alltypes a
+join /* +broadcast */ functional.alltypessmall b on a.id = b.id
+---- QUERYOPTIONS
+mt_dop=4
+parallel_broadcast_join_build=3
+compute_processing_cost=true
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=3.98MB Threads=4
+Per-Host Resource Estimates: Memory=36MB
+F02:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+max-parallelism=1 segment-costs=[4, 0] cpu-comparison-result=6 [max(1 (self) vs 6 (sum children))]
+cost-total=0 max-instances=1 adj-instances=1 cost/inst=0 #cons:#prod=1:1 reduction=1.0 cost/cons=0.0 cost/prod=0.0 raw-cost=0.0
+SumCost: cost-total=4 max-instances=1 adj-instances=1 cost/inst=4 #cons:#prod=24:24 reduction=1.0 cost/cons=0.16666667 cost/prod=0.16666667
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0 cost=0
+  |  cost-total=0 max-instances=1 adj-instances=1 cost/inst=0 #cons:#prod=1:1 reduction=1.0 cost/cons=0.0 cost/prod=0.0 raw-cost=0.0
+  |
+  06:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  SumCost: cost-total=1 max-instances=1 adj-instances=1 cost/inst=1 #cons:#prod=24:1 reduction=24.0 cost/cons=0.041666668 cost/prod=1.0
+  |  tuple-ids=2 row-size=8B cardinality=1 cost=1
+  |  in pipelines: 06(GETNEXT), 03(OPEN)
+  |
+  05:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     cost-total=3 max-instances=1 adj-instances=1 cost/inst=3 #cons:#prod=24:24 reduction=1.0 cost/cons=0.125 cost/prod=0.125 raw-cost=3.5496
+     tuple-ids=2 row-size=8B cardinality=24 cost=3
+     in pipelines: 03(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=3 (adjusted from 24)
+Per-Host Shared Resources: mem-estimate=1.00MB mem-reservation=1.00MB thread-reservation=0 runtime-filters-memory=1.00MB
+Per-Instance Resources: mem-estimate=16.02MB mem-reservation=32.00KB thread-reservation=1
+max-parallelism=3 segment-costs=[19239, 24] cpu-comparison-result=6 [max(3 (self) vs 6 (sum children))]
+cost-total=24 max-instances=1 adj-instances=3 cost/inst=8 #cons:#prod=24:24 reduction=1.0 cost/cons=1.0 cost/prod=1.0 raw-cost=24.729599999999998
+SumCost: cost-total=19239 max-instances=1 adj-instances=3 cost/inst=6413 #cons:#prod=7300:99 reduction=73.73737 cost/cons=2.6354795 cost/prod=194.33333
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=05, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0 cost=24
+  |  cost-total=24 max-instances=1 adj-instances=3 cost/inst=8 #cons:#prod=24:24 reduction=1.0 cost/cons=1.0 cost/prod=1.0 raw-cost=24.729599999999998
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  SumCost: cost-total=6 max-instances=1 adj-instances=3 cost/inst=2 #cons:#prod=99:24 reduction=4.125 cost/cons=0.060606062 cost/prod=0.25
+  |  tuple-ids=2 row-size=8B cardinality=24 cost=6
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [INNER JOIN, BROADCAST]
+  |  hash-table-id=00
+  |  hash predicates: a.id = b.id
+  |  fk/pk conjuncts: a.id = b.id
+  |  mem-estimate=0B mem-reservation=0B spill-buffer=64.00KB thread-reservation=0
+  |  cost-total=1890 max-instances=1 adj-instances=3 cost/inst=630 #cons:#prod=7400:99 reduction=74.747475 cost/cons=0.2554054 cost/prod=19.09091 raw-cost=1890.3888
+  |  tuple-ids=0,1 row-size=8B cardinality=99 cost=1890
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     runtime filters: RF000[bloom] -> a.id
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     cost-total=17343 max-instances=1 adj-instances=3 cost/inst=5781 #cons:#prod=7300:7300 reduction=1.0 cost/cons=2.3757534 cost/prod=2.3757534 raw-cost=17343.6636
+     tuple-ids=0 row-size=4B cardinality=7.30K cost=17343
+     in pipelines: 00(GETNEXT)
+
+F03:PLAN FRAGMENT [RANDOM] hosts=3 instances=3
+Per-Instance Resources: mem-estimate=2.95MB mem-reservation=2.94MB thread-reservation=1 runtime-filters-memory=1.00MB
+max-parallelism=3 segment-costs=[139]
+SumCost: cost-total=139 max-instances=1 adj-instances=3 cost/inst=47 #cons:#prod=100:100 reduction=1.0 cost/cons=1.39 cost/prod=1.39
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  build expressions: b.id
+  |  runtime filters: RF000[bloom] <- b.id
+  |  mem-estimate=1.94MB mem-reservation=1.94MB spill-buffer=64.00KB thread-reservation=0 cost=100
+  |  cost-total=100 max-instances=1 adj-instances=3 cost/inst=34 #cons:#prod=100:100 reduction=1.0 cost/cons=1.0 cost/prod=1.0 raw-cost=100.0
+  |
+  04:EXCHANGE [BROADCAST]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     BroadcastCost(3): cost-total=39 max-instances=1 adj-instances=3 cost/inst=13 #cons:#prod=100:100 reduction=1.0 cost/cons=0.39 cost/prod=0.39
+     tuple-ids=1 row-size=4B cardinality=100 cost=39
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=3 (adjusted from 4)
+Per-Instance Resources: mem-estimate=16.03MB mem-reservation=8.00KB thread-reservation=1
+max-parallelism=3 segment-costs=[232]
+SumCost: cost-total=232 max-instances=1 adj-instances=3 cost/inst=78 #cons:#prod=100:100 reduction=1.0 cost/cons=2.32 cost/prod=2.32
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=04, BROADCAST]
+  |  mem-estimate=32.00KB mem-reservation=0B thread-reservation=0 cost=3
+  |  cost-total=3 max-instances=1 adj-instances=3 cost/inst=1 #cons:#prod=100:100 reduction=1.0 cost/cons=0.03 cost/prod=0.03 raw-cost=3.24
+  01:SCAN HDFS [functional.alltypessmall b, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     cost-total=229 max-instances=1 adj-instances=3 cost/inst=77 #cons:#prod=100:100 reduction=1.0 cost/cons=2.29 cost/prod=2.29 raw-cost=229.1088
+     tuple-ids=1 row-size=4B cardinality=100 cost=229
+     in pipelines: 01(GETNEXT)
+====
+# The option is ignored for a partitioned join, which has no shared build.
+select count(*) from functional.alltypes a
+join /* +shuffle */ functional.alltypessmall b on a.id = b.id
+---- QUERYOPTIONS
+mt_dop=4
+parallel_broadcast_join_build=3
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=12.89MB Threads=15
+Per-Host Resource Estimates: Memory=112MB
+F03:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0
+  |
+  07:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=1
+  |  in pipelines: 07(GETNEXT), 03(OPEN)
+  |
+  06:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=2 row-size=8B cardinality=12
+     in pipelines: 03(GETNEXT)
+
+F02:PLAN FRAGMENT [HASH(a.id)] hosts=3 instances=12
+Per-Instance Resources: mem-estimate=121.50KB mem-reservation=0B thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=06, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=12
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [INNER JOIN, PARTITIONED]
+  |  hash-table-id=00
+  |  hash predicates: a.id = b.id
+  |  fk/pk conjuncts: a.id = b.id
+  |  mem-estimate=0B mem-reservation=0B spill-buffer=64.00KB thread-reservation=0
+  |  tuple-ids=0,1 row-size=8B cardinality=99
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  04:EXCHANGE [HASH(a.id)]
+     mem-estimate=105.50KB mem-reservation=0B thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=12
+Per-Host Shared Resources: mem-estimate=1.00MB mem-reservation=1.00MB thread-reservation=0 runtime-filters-memory=1.00MB
+Per-Instance Resources: mem-estimate=16.38MB mem-reservation=32.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=04, HASH(a.id)]
+  |  mem-estimate=384.00KB mem-reservation=0B thread-reservation=0
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     runtime filters: RF000[bloom] -> a.id
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F04:PLAN FRAGMENT [HASH(a.id)] hosts=3 instances=12
+Per-Instance Resources: mem-estimate=2.95MB mem-reservation=2.94MB thread-reservation=1 runtime-filters-memory=1.00MB
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  build expressions: b.id
+  |  runtime filters: RF000[bloom] <- b.id
+  |  mem-estimate=1.94MB mem-reservation=1.94MB spill-buffer=64.00KB thread-reservation=0
+  |
+  05:EXCHANGE [HASH(b.id)]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=4
+Per-Instance Resources: mem-estimate=16.38MB mem-reservation=8.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F04, EXCHANGE=05, HASH(b.id)]
+  |  mem-estimate=384.00KB mem-reservation=0B thread-reservation=0
+  01:SCAN HDFS [functional.alltypessmall b, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+====
+# More workers than partitions per worker can use are capped at 16.
+select count(*) from functional.alltypes a
+join /* +broadcast */ functional.alltypessmall b on a.id = b.id
+---- QUERYOPTIONS
+mt_dop=4
+parallel_broadcast_join_build=100
+explain_level=3
+---- PARALLELPLANS
+Max Per-Host Resource Reservation: Memory=33.14MB Threads=23
+Per-Host Resource Estimates: Memory=130MB
+F02:PLAN FRAGMENT [UNPARTITIONED] hosts=1 instances=1
+Per-Instance Resources: mem-estimate=32.00KB mem-reservation=0B thread-reservation=1
+  PLAN-ROOT SINK
+  |  output exprs: count(*)
+  |  mem-estimate=0B mem-reservation=0B thread-reservation=0
+  |
+  06:AGGREGATE [FINALIZE]
+  |  output: count:merge(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=1
+  |  in pipelines: 06(GETNEXT), 03(OPEN)
+  |
+  05:EXCHANGE [UNPARTITIONED]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=2 row-size=8B cardinality=12
+     in pipelines: 03(GETNEXT)
+
+F00:PLAN FRAGMENT [RANDOM] hosts=3 instances=12
+Per-Host Shared Resources: mem-estimate=1.00MB mem-reservation=1.00MB thread-reservation=0 runtime-filters-memory=1.00MB
+Per-Instance Resources: mem-estimate=16.02MB mem-reservation=32.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F02, EXCHANGE=05, UNPARTITIONED]
+  |  mem-estimate=48.00KB mem-reservation=0B thread-reservation=0
+  03:AGGREGATE
+  |  output: count(*)
+  |  mem-estimate=16.00KB mem-reservation=0B spill-buffer=2.00MB thread-reservation=0
+  |  tuple-ids=2 row-size=8B cardinality=12
+  |  in pipelines: 03(GETNEXT), 00(OPEN)
+  |
+  02:HASH JOIN [INNER JOIN, BROADCAST]
+  |  hash-table-id=00
+  |  hash predicates: a.id = b.id
+  |  fk/pk conjuncts: a.id = b.id
+  |  mem-estimate=0B mem-reservation=0B spill-buffer=64.00KB thread-reservation=0
+  |  tuple-ids=0,1 row-size=8B cardinality=99
+  |  in pipelines: 00(GETNEXT), 01(OPEN)
+  |
+  00:SCAN HDFS [functional.alltypes a, RANDOM]
+     HDFS partitions=24/24 files=24 size=478.45KB
+     runtime filters: RF000[bloom] -> a.id
+     stored statistics:
+       table: rows=7.30K size=478.45KB
+       partitions: 24/24 rows=7.30K
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=310
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=32.00KB thread-reservation=0
+     tuple-ids=0 row-size=4B cardinality=7.30K
+     in pipelines: 00(GETNEXT)
+
+F03:PLAN FRAGMENT [RANDOM] hosts=3 instances=48
+Per-Instance Resources: mem-estimate=2.02MB mem-reservation=2.00MB thread-reservation=1 runtime-filters-memory=1.00MB
+  JOIN BUILD
+  |  join-table-id=00 plan-id=01 cohort-id=01
+  |  parallel build workers per host: 16
+  |  build expressions: b.id
+  |  runtime filters: RF000[bloom] <- b.id
+  |  mem-estimate=1.00MB mem-reservation=1.00MB spill-buffer=64.00KB thread-reservation=0
+  |
+  04:EXCHANGE [BROADCAST]
+     mem-estimate=16.00KB mem-reservation=0B thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+
+F01:PLAN FRAGMENT [RANDOM] hosts=3 instances=4
+Per-Instance Resources: mem-estimate=16.50MB mem-reservation=8.00KB thread-reservation=1
+  DATASTREAM SINK [FRAGMENT=F03, EXCHANGE=04, BROADCAST, BUILD-WORKERS=16]
+  |  mem-estimate=512.00KB mem-reservation=0B thread-reservation=0
+  01:SCAN HDFS [functional.alltypessmall b, RANDOM]
+     HDFS partitions=4/4 files=4 size=6.32KB
+     stored statistics:
+       table: rows=100 size=6.32KB
+       partitions: 4/4 rows=100
+       columns: all
+     extrapolated-rows=disabled max-scan-range-rows=25
+     file formats: [TEXT]
+     mem-estimate=16.00MB mem-reservation=8.00KB thread-reservation=0
+     tuple-ids=1 row-size=4B cardinality=100
+     in pipelines: 01(GETNEXT)
+====
