@@ -88,6 +88,11 @@ class KrpcDataStreamSenderConfig : public DataSinkConfig {
   typedef Status (*HashAndAddRowsFn)(KrpcDataStreamSender*, RowBatch* row);
   CodegenFnPtr<HashAndAddRowsFn> hash_and_add_rows_fn_;
 
+  /// Type and pointer for the codegen'd KrpcDataStreamSender::AddRowsToBuildWorkers()
+  /// function used for join build partitioning. NULL if codegen is disabled or failed.
+  typedef Status (*AddRowsToBuildWorkersFn)(KrpcDataStreamSender*, RowBatch* batch);
+  CodegenFnPtr<AddRowsToBuildWorkersFn> add_rows_to_build_workers_fn_;
+
   typedef Status (*SerializeBatchFn)(RowBatch*, OutboundRowBatch* output_batch,
       TrackedString* compression_scratch);
 
@@ -105,6 +110,10 @@ class KrpcDataStreamSenderConfig : public DataSinkConfig {
   /// the partition expressions and replaces the column type argument to the hash function
   /// with constants to eliminate some branches. Returns error status on failure.
   Status CodegenHashRow(LlvmCodeGen* codegen, llvm::Function** fn);
+
+  /// Codegens AddRowsToBuildWorkers() for join build partitioning, using the build
+  /// side expression evaluation and hash functions of the hash table.
+  Status CodegenAddRowsToBuildWorkers(LlvmCodeGen* codegen);
 
   /// Returns the name of the partitioning type of this data stream sender.
   std::string PartitionTypeName() const;
@@ -385,6 +394,8 @@ class KrpcDataStreamSender : public DataSink {
   /// Pointer for the codegen'd HashAndAddRows() function.
   /// NULL if codegen is disabled or failed.
   const CodegenFnPtr<KrpcDataStreamSenderConfig::HashAndAddRowsFn>& hash_and_add_rows_fn_;
+  const CodegenFnPtr<KrpcDataStreamSenderConfig::AddRowsToBuildWorkersFn>&
+      add_rows_to_build_workers_fn_;
 
   const CodegenFnPtr<KrpcDataStreamSenderConfig::SerializeBatchFn>& serialize_batch_fn_;
 

@@ -115,8 +115,34 @@ class TestParallelBroadcastJoinBuild(CustomClusterTestSuite):
                   num_workers, runtime_filters, query)
           assert self._num_builders(profile) == self.NUM_HOSTS * num_workers, query
 
+  # The sender codegen status is reported as e.g.
+  #   Join Build Partitioning UNPARTITIONED Sender Codegen Enabled
+  SENDER_CODEGEN_RE = re.compile(r"Join Build Partitioning .*Codegen (\w+)")
+
+  @CustomClusterTestSuite.with_args(cluster_size=NUM_HOSTS)
+  def test_sender_codegen(self):
+    """The codegen'd and interpreted evaluation of the join hash in the sender route
+    rows to the same workers: results match the serial build with codegen on and off,
+    including NULL keys, a null-safe join and a CHAR key."""
+    codegen_on = {"disable_codegen": "false", "disable_codegen_rows_threshold": "0"}
+    codegen_off = {"disable_codegen": "true"}
+    char_query = """select count(*) from functional.chars_tiny a
+        join /* +broadcast */ functional.chars_tiny b on a.cs = b.cs"""
+    for query in self.QUERIES + [char_query]:
+      expected, _ = self._run(query, 0, False)
+      for num_workers in [2, 4, 16]:
+        on, on_profile = self._run(query, num_workers, False, codegen_on)
+        off, off_profile = self._run(query, num_workers, False, codegen_off)
+        assert on.data == expected.data, query
+        assert off.data == expected.data, query
+        assert self._total_build_rows(on_profile) == self._total_build_rows(off_profile)
+        on_status = set(self.SENDER_CODEGEN_RE.findall(on_profile))
+        off_status = set(self.SENDER_CODEGEN_RE.findall(off_profile))
+        assert on_status == {"Enabled"}, query
+        assert off_status <= {"Disabled"}, query
+
   # Counters print a compact value followed by the exact one: "BuildRows: 1.00K (1000)".
-  BUILD_ROWS_RE = re.compile(r"^\s*- BuildRows: \S+ \((\d+)\)")
+  BUILD_ROWS_RE =re.compile(r"^\s*- BuildRows: \S+ \((\d+)\)")
 
   def _total_build_rows(self, profile):
     """Returns the sum of the rows received by all the join builder instances."""

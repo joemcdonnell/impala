@@ -820,6 +820,7 @@ KrpcDataStreamSender::KrpcDataStreamSender(TDataSinkId sink_id, int sender_id,
     next_unknown_partition_(0),
     exchange_hash_seed_(sink_config.exchange_hash_seed_),
     hash_and_add_rows_fn_(sink_config.hash_and_add_rows_fn_),
+    add_rows_to_build_workers_fn_(sink_config.add_rows_to_build_workers_fn_),
     serialize_batch_fn_(sink_config.serialize_batch_fn_),
     filepath_to_hosts_(sink_config.filepath_to_hosts_) {
   DCHECK_GT(destinations.size(), 0);
@@ -1176,6 +1177,10 @@ void KrpcDataStreamSenderConfig::Codegen(FragmentState* state) {
         codegen->AddFunctionToJit(serialize_batch_fn, &serialize_batch_fn_);
       }
     }
+    if (has_join_build_partitioning_) {
+      AddCodegenStatus(CodegenAddRowsToBuildWorkers(codegen),
+          "Join Build Partitioning " + sender_name);
+    }
   } else {
     const string& msg = Substitute("not $0",
         partition_type_ == TPartitionType::KUDU ? "supported" : "needed");
@@ -1185,6 +1190,40 @@ void KrpcDataStreamSenderConfig::Codegen(FragmentState* state) {
   }
 
   AddCodegenStatus(codegen_status, sender_name);
+}
+
+Status KrpcDataStreamSenderConfig::CodegenAddRowsToBuildWorkers(LlvmCodeGen* codegen) {
+  llvm::Function* eval_row_fn = nullptr;
+  RETURN_IF_ERROR(HashTableCtx::CodegenEvalRow(
+      codegen, true, *join_build_hash_table_config_, &eval_row_fn));
+  // The sender hashes at level 0 like the builder, which uses the CRC hash function.
+  llvm::Function* hash_fn = nullptr;
+  RETURN_IF_ERROR(HashTableCtx::CodegenHashRow(
+      codegen, false, *join_build_hash_table_config_, &hash_fn));
+
+  llvm::Function* add_rows_fn =
+      codegen->GetFunction(IRFunction::KRPC_DSS_ADD_ROWS_TO_BUILD_WORKERS, true);
+  DCHECK(add_rows_fn != nullptr);
+
+  int num_replaced = codegen->ReplaceCallSites(add_rows_fn, eval_row_fn, "EvalBuildRow");
+  DCHECK_EQ(num_replaced, 1);
+  num_replaced = codegen->ReplaceCallSites(add_rows_fn, hash_fn, "HashRow");
+  DCHECK_EQ(num_replaced, 1);
+
+  HashTableCtx::HashTableReplacedConstants replaced_constants;
+  const bool stores_duplicates = true;
+  const int num_build_tuples = input_row_desc_->tuple_descriptors().size();
+  RETURN_IF_ERROR(HashTableCtx::ReplaceHashTableConstants(codegen,
+      *join_build_hash_table_config_, stores_duplicates, num_build_tuples, add_rows_fn,
+      &replaced_constants));
+  DCHECK_GE(replaced_constants.stores_nulls, 1);
+
+  add_rows_fn = codegen->FinalizeFunction(add_rows_fn);
+  if (add_rows_fn == nullptr) {
+    return Status("Codegen'd AddRowsToBuildWorkers() failed verification. See log");
+  }
+  codegen->AddFunctionToJit(add_rows_fn, &add_rows_to_build_workers_fn_);
+  return Status::OK();
 }
 
 uint64_t KrpcDataStreamSender::HashRow(TupleRow* row, uint64_t seed) {
@@ -1208,7 +1247,13 @@ Status KrpcDataStreamSender::Send(RuntimeState* state, RowBatch* batch) {
   if (batch->num_rows() == 0) return Status::OK();
   if (!build_worker_collectors_.empty()) {
     DCHECK_EQ(partition_type_, TPartitionType::UNPARTITIONED);
-    RETURN_IF_ERROR(AddRowsToBuildWorkers(batch));
+    const KrpcDataStreamSenderConfig::AddRowsToBuildWorkersFn add_rows_fn =
+        add_rows_to_build_workers_fn_.load();
+    if (add_rows_fn != nullptr) {
+      RETURN_IF_ERROR(add_rows_fn(this, batch));
+    } else {
+      RETURN_IF_ERROR(AddRowsToBuildWorkers(batch));
+    }
   } else if (partition_type_ == TPartitionType::UNPARTITIONED) {
     // Only skip compression if there is a single channel and destination is in the same
     // process. TODO: could be optimized to send the uncompressed buffer to the local
@@ -1355,38 +1400,6 @@ void KrpcDataStreamSender::DumpDestinationHosts() const {
   for (const auto& host : host_to_channel_) {
     VLOG(3) << "Network Address: " << host.first;
   }
-}
-
-Status KrpcDataStreamSender::AddRowsToBuildWorkers(RowBatch* batch) {
-  const int num_build_workers = build_worker_collectors_.size();
-  HashTableCtx::ExprValuesCache* expr_vals_cache = join_build_ht_ctx_->expr_values_cache();
-  expr_vals_cache->Reset();
-  FOREACH_ROW(batch, 0, batch_iter) {
-    TupleRow* row = batch_iter.Get();
-    // Use the same hash function and partition as PhjBuilder::ProcessBuildBatch(). It
-    // does not add rows with a NULL in an equi-join key to the hash table (unless the
-    // join stores NULLs), so they do not have a partition. They are sent to the first
-    // worker, which skips them like the serial build does.
-    int worker_idx = 0;
-    if (join_build_ht_ctx_->EvalAndHashBuild(row)) {
-      worker_idx = PhjBuilder::BuildWorkerForPartition(
-          PhjBuilder::PartitionIndex(expr_vals_cache->CurExprValuesHash()),
-          num_build_workers);
-    }
-    RETURN_IF_ERROR(build_worker_collectors_[worker_idx].AppendRow(row, row_desc_));
-  }
-  return Status::OK();
-}
-
-Status KrpcDataStreamSender::BuildWorkerRowCollector::AppendRow(
-    const TupleRow* row, const RowDescriptor* row_desc) {
-  DCHECK_LT(num_rows_, row_batch_capacity_);
-  ++num_rows_;
-  RETURN_IF_ERROR(collector_batch_->AppendRow(row, row_desc));
-  if (UNLIKELY(num_rows_ == row_batch_capacity_ || collector_batch_->ReachedSizeLimit())) {
-    RETURN_IF_ERROR(SendCurrentBatch());
-  }
-  return Status::OK();
 }
 
 Status KrpcDataStreamSender::BuildWorkerRowCollector::SendCurrentBatch() {

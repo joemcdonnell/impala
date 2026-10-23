@@ -242,6 +242,8 @@ ir_functions = [
   "_ZN6impala20KrpcDataStreamSender25GetPartitionExprEvaluatorEi"],
   ["KRPC_DSS_HASH_AND_ADD_ROWS",
   "_ZN6impala20KrpcDataStreamSender14HashAndAddRowsEPNS_8RowBatchE"],
+  ["KRPC_DSS_ADD_ROWS_TO_BUILD_WORKERS",
+  "_ZN6impala20KrpcDataStreamSender21AddRowsToBuildWorkersEPNS_8RowBatchE"],
   ["GET_FUNCTION_CTX",
   "_ZN6impala19ScalarExprEvaluator18GetFunctionContextEPS0_i"],
   ["GET_CHILD_EVALUATOR", "_ZN6impala19ScalarExprEvaluator17GetChildEvaluatorEPS0_i"],

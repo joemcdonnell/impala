@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include "exec/hash-table.inline.h"
+#include "exec/partitioned-hash-join-builder.h"
 #include "exprs/scalar-expr-evaluator.h"
 #include "runtime/krpc-data-stream-sender.h"
 #include "runtime/outbound-row-batch.inline.h"
@@ -61,6 +63,38 @@ Status KrpcDataStreamSender::PartitionRowCollector::AppendRow(
   if (UNLIKELY(
       num_rows_ == row_batch_capacity_ || collector_batch_->ReachedSizeLimit())) {
     // This swaps collector_batch_ with an empty batch.
+    RETURN_IF_ERROR(SendCurrentBatch());
+  }
+  return Status::OK();
+}
+
+Status KrpcDataStreamSender::AddRowsToBuildWorkers(RowBatch* batch) {
+  const int num_build_workers = build_worker_collectors_.size();
+  HashTableCtx::ExprValuesCache* expr_vals_cache = join_build_ht_ctx_->expr_values_cache();
+  expr_vals_cache->Reset();
+  FOREACH_ROW(batch, 0, batch_iter) {
+    TupleRow* row = batch_iter.Get();
+    // Use the same hash function and partition as PhjBuilder::ProcessBuildBatch(). It
+    // does not add rows with a NULL in an equi-join key to the hash table (unless the
+    // join stores NULLs), so they do not have a partition. They are sent to the first
+    // worker, which skips them like the serial build does.
+    int worker_idx = 0;
+    if (join_build_ht_ctx_->EvalAndHashBuild(row)) {
+      worker_idx = PhjBuilder::BuildWorkerForPartition(
+          PhjBuilder::PartitionIndex(expr_vals_cache->CurExprValuesHash()),
+          num_build_workers);
+    }
+    RETURN_IF_ERROR(build_worker_collectors_[worker_idx].AppendRow(row, row_desc_));
+  }
+  return Status::OK();
+}
+
+Status KrpcDataStreamSender::BuildWorkerRowCollector::AppendRow(
+    const TupleRow* row, const RowDescriptor* row_desc) {
+  DCHECK_LT(num_rows_, row_batch_capacity_);
+  ++num_rows_;
+  RETURN_IF_ERROR(collector_batch_->AppendRow(row, row_desc));
+  if (UNLIKELY(num_rows_ == row_batch_capacity_ || collector_batch_->ReachedSizeLimit())) {
     RETURN_IF_ERROR(SendCurrentBatch());
   }
   return Status::OK();
